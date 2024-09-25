@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::env::current_dir;
+// use std::env::current_dir;
 
 // use clap::{Arg, Command, Parser};
 use clap::{arg, command, value_parser, ArgAction, Command, Parser, Subcommand};
@@ -98,40 +98,17 @@ fn run_wizard(output: &str) {
         Ok(Validation::Valid)
     };
 
-    let base_image = Text::new("Enter the base image:")
-        .with_validator(validator)
-        .prompt();
-
-    let base_image_value = match base_image {
-        Ok(base_image) => base_image,
-        Err(err) => {
-            println!("Error while publishing your status: {}", err);
-            return; // early return on error
-        },
-    };
-
-    let init_cmd = Text::new("Enter an init command:")
-        .with_validator(validator)
-        .prompt();
-
-    let init_cmd_value = match init_cmd {
-        Ok(value) => value,
-        Err(err) => {
-            println!("Error while publishing your status: {}", err);
-            return; // early return on error
-        },
-    };
-
-    let home_value = prompt_for_value("Which home directory should the container use");
-
-
+    let container_name = text_prompt_for_value("What should the container be named?: ");
+    let base_image = text_prompt_for_value("Enter the base image: ");
+    let init_cmd = text_prompt_for_value("Enter an init command: ")
+    let home_value = text_prompt_for_value("Which home directory should the container use");
 
     // Additional steps...
 
     // Generate the assemble.ini content
     let assemble_content = format!(
-        "[distrobox]\nbase_image = \"{}\"\ninit_cmd = \"{}\"\nhome= \"{}\"\n",
-        base_image_value, init_cmd_value, home_value
+        "[{}]\nimage=\"{}\"\ninit=\"{}\"\nhome=\"{}\"\n",
+        container_name, base_image, init_cmd, home_value
     );
 
     // Write to file
@@ -149,17 +126,19 @@ fn run_wizard(output: &str) {
 //     input.trim().to_string()
 // }
 
-fn prompt_for_value(prompt_question: &str) -> String {
+fn text_prompt_for_value(prompt_question: &str) -> String {
+    // validation for the inquire packages text prompt
     let validator = |input: &str| if input.chars().count() > 140 {
         Ok(Validation::Invalid("You're only allowed 140 characters.".into()))
     } else {
         Ok(Validation::Valid)
     };
 
-     let value = Text::new(prompt_question)
+    let value = Text::new(prompt_question)
         .with_validator(validator)
         .prompt();
 
+    // extract the value out of the Result
     let final_value = match value {
         Ok(value) => value,
         Err(err) => {
@@ -168,5 +147,4 @@ fn prompt_for_value(prompt_question: &str) -> String {
         },
     };
     final_value
-
 }
