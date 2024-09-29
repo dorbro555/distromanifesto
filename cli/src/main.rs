@@ -110,15 +110,15 @@ fn run_wizard(output: &str) {
         "unshare_all",
     ];
 
-    let formatter: MultiOptionFormatter<'_, &str> = &|a| format!("{} different fruits", a.len());
+    let formatter: MultiOptionFormatter<'_, &str> = &|a| format!("{} different flags", a.len());
 
-    let ans = MultiSelect::new("Select which flags you would like to turn on:", options)
+    let enabled_flags = MultiSelect::new("Select which flags you would like to turn on:", options)
         .with_formatter(formatter)
         .prompt();
 
-    match ans {
-        Ok(ans) => println!("I'll get right on it {}",ans[0]),
-        Err(_) => println!("The shopping list could not be processed"),
+    match enabled_flags {
+        Ok(ans) => println!("Enabled flags {:?}",ans),
+        Err(_) => println!("The enabled flags could not be processed"),
     }
 
     // Additional steps...
@@ -134,15 +134,6 @@ fn run_wizard(output: &str) {
     println!("Assemble file created at: {}", output);
     println!("Created Manifest file contents: {}", assemble_content)
 }
-
-// fn inquire(prompt: &str) -> String {
-//     use std::io::{self, Write};
-//     print!("{} ", prompt);
-//     io::stdout().flush().unwrap();
-//     let mut input = String::new();
-//     io::stdin().read_line(&mut input).unwrap();
-//     input.trim().to_string()
-// }
 
 fn text_prompt_for_value(prompt_question: &str) -> String {
     // validation for the inquire packages text prompt
@@ -183,3 +174,12 @@ fn confirm_prompt_for_value(prompt_question: &str) -> bool {
     };
     final_value
 }
+
+// fn inquire(prompt: &str) -> String {
+//     use std::io::{self, Write};
+//     print!("{} ", prompt);
+//     io::stdout().flush().unwrap();
+//     let mut input = String::new();
+//     io::stdin().read_line(&mut input).unwrap();
+//     input.trim().to_string()
+// }
