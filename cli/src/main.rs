@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 // use clap::{Arg, Command, Parser};
 use clap::{arg, command, value_parser, ArgAction, Command, Parser, Subcommand};
-use inquire::{Text, validator::{StringValidator, Validation}};
+use inquire::{Text, Confirm, formatter::MultiOptionFormatter, MultiSelect, validator::{StringValidator, Validation}};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -91,23 +91,41 @@ fn run_wizard(output: &str) {
     // let base_image = inquire("Enter the base image:");
     // let init_cmd = inquire("Enter the initialization command:");
 
-    // validation for the inquire packages text prompt
-    let validator = |input: &str| if input.chars().count() > 140 {
-        Ok(Validation::Invalid("You're only allowed 140 characters.".into()))
-    } else {
-        Ok(Validation::Valid)
-    };
-
     let container_name = text_prompt_for_value("What should the container be named?: ");
     let base_image = text_prompt_for_value("Enter the base image: ");
-    let init_cmd = text_prompt_for_value("Enter an init command: ")
+    let init_cmd = text_prompt_for_value("Enter an init command: ");
     let home_value = text_prompt_for_value("Which home directory should the container use");
+
+    let options = vec![
+        "entry",
+        "start_now",
+        "init",
+        "nvidia",
+        "pull",
+        "root",
+        "unshare_ipc",
+        "unshare_netns",
+        "unshare_process",
+        "unshare_devsys",
+        "unshare_all",
+    ];
+
+    let formatter: MultiOptionFormatter<'_, &str> = &|a| format!("{} different fruits", a.len());
+
+    let ans = MultiSelect::new("Select which flags you would like to turn on:", options)
+        .with_formatter(formatter)
+        .prompt();
+
+    match ans {
+        Ok(ans) => println!("I'll get right on it {}",ans[0]),
+        Err(_) => println!("The shopping list could not be processed"),
+    }
 
     // Additional steps...
 
     // Generate the assemble.ini content
     let assemble_content = format!(
-        "[{}]\nimage=\"{}\"\ninit=\"{}\"\nhome=\"{}\"\n",
+        "\n[{}]\nimage=\"{}\"\ninit=\"{}\"\nhome=\"{}\"\n",
         container_name, base_image, init_cmd, home_value
     );
 
@@ -136,6 +154,23 @@ fn text_prompt_for_value(prompt_question: &str) -> String {
 
     let value = Text::new(prompt_question)
         .with_validator(validator)
+        .prompt();
+
+    // extract the value out of the Result
+    let final_value = match value {
+        Ok(value) => value,
+        Err(err) => {
+            println!("Error while publishing your status: {}", err);
+            panic!("Encountered an error"); // early return on error
+        },
+    };
+    final_value
+}
+
+fn confirm_prompt_for_value(prompt_question: &str) -> bool {
+    let value = Confirm::new(prompt_question)
+        .with_help_message("the help message")
+        .with_default(false)
         .prompt();
 
     // extract the value out of the Result
