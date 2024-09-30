@@ -94,39 +94,16 @@ fn run_wizard(output: &str) {
     let container_name = text_prompt_for_value("What should the container be named?: ");
     let base_image = text_prompt_for_value("Enter the base image: ");
     let init_cmd = text_prompt_for_value("Enter an init command: ");
-    let home_value = text_prompt_for_value("Which home directory should the container use");
+    let home_value = text_prompt_for_value("Which home directory should the container use: ");
 
-    let options = vec![
-        "entry",
-        "start_now",
-        "init",
-        "nvidia",
-        "pull",
-        "root",
-        "unshare_ipc",
-        "unshare_netns",
-        "unshare_process",
-        "unshare_devsys",
-        "unshare_all",
-    ];
-
-    let formatter: MultiOptionFormatter<'_, &str> = &|a| format!("{} different flags", a.len());
-
-    let enabled_flags = MultiSelect::new("Select which flags you would like to turn on:", options)
-        .with_formatter(formatter)
-        .prompt();
-
-    match enabled_flags {
-        Ok(ans) => println!("Enabled flags {:?}",ans),
-        Err(_) => println!("The enabled flags could not be processed"),
-    }
+    let enabled_flags = multiselect_prompt_for_value("Select which flags you would like to turn on: ")
 
     // Additional steps...
 
     // Generate the assemble.ini content
     let assemble_content = format!(
-        "\n[{}]\nimage=\"{}\"\ninit=\"{}\"\nhome=\"{}\"\n",
-        container_name, base_image, init_cmd, home_value
+        "\n[{}]\nimage=\"{}\"\ninit=\"{}\"\nhome=\"{}\"\nflags=\"{:?}\"",
+        container_name, base_image, init_cmd, home_value, enabled_flags
     );
 
     // Write to file
@@ -173,6 +150,44 @@ fn confirm_prompt_for_value(prompt_question: &str) -> bool {
         },
     };
     final_value
+}
+
+fn multiselect_prompt_for_value(prompt_question: &str) -> String {
+    let options = vec![
+        "entry",
+        "start_now",
+        "init",
+        "nvidia",
+        "pull",
+        "root",
+        "unshare_ipc",
+        "unshare_netns",
+        "unshare_process",
+        "unshare_devsys",
+        "unshare_all",
+    ];
+
+    let formatter: MultiOptionFormatter<'_, &str> = &|a| format!("{} different flags", a.len());
+
+    let flags = MultiSelect::new(prompt_question, options)
+        .with_formatter(formatter)
+        .prompt();
+
+    let enabled_flags = match flags {
+        Ok(values) => values,
+        Err(err) => {
+            panic!("The enabled flags could not be processed");
+        },
+    };
+
+    let mut manifest_files_flags: String = "";
+
+    for x in enabled_flags {
+        manifest_files_flags.push_str("{}=true\n")
+    }
+
+    manifest_files_flags
+
 }
 
 // fn inquire(prompt: &str) -> String {
