@@ -1,24 +1,24 @@
 use std::path::PathBuf;
-// use std::env::current_dir;
+use std::fs;
 
-// use clap::{Arg, Command, Parser};
-use clap::{arg, command, value_parser, ArgAction, Command, Parser, Subcommand};
-use inquire::{Text, Confirm, formatter::MultiOptionFormatter, MultiSelect, validator::{StringValidator, Validation}};
+use clap::{arg, command, Parser, Subcommand};
+use inquire::{Text, Confirm, MultiSelect, validator::{Validation}};
 
 #[derive(Parser)]
-#[command(version, about, long_about = None)]
-
+#[command(
+    name = "distromanifesto",
+    version,
+    about = "A CLI wizard for creating and managing Distrobox manifest files",
+    long_about = None
+)]
 struct Args {
-    /// Optional name to operate on
-    name: Option<String>,
-
     /// Sets a custom config file
     #[arg(short, long, value_name = "FILE")]
     config: Option<PathBuf>,
 
-    /// Turn debugging information on
+    /// Turn debugging information on (-v, -vv, etc.)
     #[arg(short, long, action = clap::ArgAction::Count)]
-    debug: u8,
+    verbose: u8,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -26,175 +26,128 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// does testing things
-    Test {
-        /// lists test values
-        #[arg(short, long)]
-        list: bool,
-    },
-    /// Runs a wizard to create a distrobox manifest file
+    /// Run the interactive wizard to create a manifest file
     Wizard {
-        /// Sets output filepath
-        #[arg(short, long, default_value_t = String::from("./"))]
-        filepath: String,
-    }
+        /// Output directory or filename
+        #[arg(short, long, default_value = "./assemble.ini")]
+        output: String,
+    },
+    /// Verify syntax and structure of a manifest file
+    Verify {
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
+    /// Edit an existing manifest file (TUI planned)
+    Modify {
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
 }
 
 fn main() {
-
     let args = Args::parse();
 
-    // You can check the value provided by positional arguments, or option arguments
-    if let Some(name) = args.name.as_deref() {
-        println!("Value for name: {name}");
+    if args.verbose > 0 {
+        println!("Verbosity level: {}", args.verbose);
     }
 
-    if let Some(config_path) = args.config.as_deref() {
-        println!("Value for config: {}", config_path.display());
-    }
-
-    // You can see how many times a particular flag or argument occurred
-    // Note, only flags can have multiple occurrences
-    match args.debug {
-        0 => println!("Debug mode is off"),
-        1 => println!("Debug mode is kind of on"),
-        2 => println!("Debug mode is on"),
-        _ => println!("Don't be crazy"),
-    }
-
-    // You can check for the existence of subcommands, and if found use their
-    // matches just as you would the top level cmd
     match &args.command {
-        Some(Commands::Test { list }) => {
-            if *list {
-                println!("Printing testing lists...");
-            } else {
-                println!("Not printing testing lists...");
+        Some(Commands::Wizard { output }) => {
+            println!("Starting the Distromanifesto wizard...");
+            if let Err(e) = run_wizard(output) {
+                eprintln!("❌ Wizard failed: {}", e);
             }
         }
-        Some(Commands::Wizard { filepath: _ }) => {
-            println!("Starting the wizard!");
-            run_wizard("./")
+        Some(Commands::Verify { file }) => {
+            println!("Verifying manifest: {}", file.display());
+            // TODO: Implement verify logic
         }
-        None => {}
+        Some(Commands::Modify { file }) => {
+            println!("Opening manifest in TUI editor: {}", file.display());
+            // TODO: Implement modify logic
+        }
+        None => {
+            // If no subcommand provided, default to wizard
+            println!("No subcommand given, starting wizard by default...");
+            if let Err(e) = run_wizard("./assemble.ini") {
+                eprintln!("❌ Wizard failed: {}", e);
+            }
+        }
     }
-
-    // for _ in 0..args.count {
-    //     println!("Hello {}!", args.name);
-    // }
 }
 
-fn run_wizard(output: &str) {
+fn run_wizard(output_path: &str) -> Result<(), String> {
     println!("Welcome to the Distro Manifesto Wizard!");
 
-    // Example step: Choose a base image
-    // let base_image = inquire("Enter the base image:");
-    // let init_cmd = inquire("Enter the initialization command:");
+    let container_name = text_prompt("Container name: ")?;
+    let base_image = text_prompt("Base image (e.g. archlinux:latest): ")?;
+    let init_cmd = text_prompt("Init command (e.g. bash): ")?;
+    let home_dir = text_prompt("Container home directory (default: /home/user): ")?;
 
-    let container_name = text_prompt_for_value("What should the container be named?: ");
-    let base_image = text_prompt_for_value("Enter the base image: ");
-    let init_cmd = text_prompt_for_value("Enter an init command: ");
-    let home_value = text_prompt_for_value("Which home directory should the container use: ");
+    let enabled_flags = multiselect_prompt("Select flags to enable:")?;
 
-    let enabled_flags = multiselect_prompt_for_value("Select which flags you would like to turn on: ")
+    // Assemble the manifest
+    let mut manifest = String::new();
+    manifest.push_str(&format!("[{}]\n", container_name));
+    manifest.push_str(&format!("image=\"{}\"\n", base_image));
+    manifest.push_str(&format!("init=\"{}\"\n", init_cmd));
+    manifest.push_str(&format!("home=\"{}\"\n", home_dir));
 
-    // Additional steps...
-
-    // Generate the assemble.ini content
-    let assemble_content = format!(
-        "\n[{}]\nimage=\"{}\"\ninit=\"{}\"\nhome=\"{}\"\nflags=\"{:?}\"",
-        container_name, base_image, init_cmd, home_value, enabled_flags
-    );
-
-    // Write to file
-    // std::fs::write(output, assemble_content).expect("Unable to write file");
-    println!("Assemble file created at: {}", output);
-    println!("Created Manifest file contents: {}", assemble_content)
-}
-
-fn text_prompt_for_value(prompt_question: &str) -> String {
-    // validation for the inquire packages text prompt
-    let validator = |input: &str| if input.chars().count() > 140 {
-        Ok(Validation::Invalid("You're only allowed 140 characters.".into()))
-    } else {
-        Ok(Validation::Valid)
-    };
-
-    let value = Text::new(prompt_question)
-        .with_validator(validator)
-        .prompt();
-
-    // extract the value out of the Result
-    let final_value = match value {
-        Ok(value) => value,
-        Err(err) => {
-            println!("Error while publishing your status: {}", err);
-            panic!("Encountered an error"); // early return on error
-        },
-    };
-    final_value
-}
-
-fn confirm_prompt_for_value(prompt_question: &str) -> bool {
-    let value = Confirm::new(prompt_question)
-        .with_help_message("the help message")
-        .with_default(false)
-        .prompt();
-
-    // extract the value out of the Result
-    let final_value = match value {
-        Ok(value) => value,
-        Err(err) => {
-            println!("Error while publishing your status: {}", err);
-            panic!("Encountered an error"); // early return on error
-        },
-    };
-    final_value
-}
-
-fn multiselect_prompt_for_value(prompt_question: &str) -> String {
-    let options = vec![
-        "entry",
-        "start_now",
-        "init",
-        "nvidia",
-        "pull",
-        "root",
-        "unshare_ipc",
-        "unshare_netns",
-        "unshare_process",
-        "unshare_devsys",
-        "unshare_all",
-    ];
-
-    let formatter: MultiOptionFormatter<'_, &str> = &|a| format!("{} different flags", a.len());
-
-    let flags = MultiSelect::new(prompt_question, options)
-        .with_formatter(formatter)
-        .prompt();
-
-    let enabled_flags = match flags {
-        Ok(values) => values,
-        Err(err) => {
-            panic!("The enabled flags could not be processed");
-        },
-    };
-
-    let mut manifest_files_flags: String = "";
-
-    for x in enabled_flags {
-        manifest_files_flags.push_str("{}=true\n")
+    for flag in &enabled_flags {
+        manifest.push_str(&format!("{}=true\n", flag));
     }
 
-    manifest_files_flags
+    println!("\n──────────────────────────────");
+    println!("Preview manifest:\n{}\n", manifest);
+    println!("──────────────────────────────");
 
+    if confirm_prompt("Save this manifest?")? {
+        fs::write(output_path, manifest)
+            .map_err(|e| format!("Failed to write file: {}", e))?;
+        println!("✅ Manifest saved to {}", output_path);
+    } else {
+        println!("Manifest not saved.");
+    }
+
+    Ok(())
 }
 
-// fn inquire(prompt: &str) -> String {
-//     use std::io::{self, Write};
-//     print!("{} ", prompt);
-//     io::stdout().flush().unwrap();
-//     let mut input = String::new();
-//     io::stdin().read_line(&mut input).unwrap();
-//     input.trim().to_string()
-// }
+// -------------------- Prompt Helpers --------------------
+
+fn text_prompt(prompt: &str) -> Result<String, String> {
+    let validator = |input: &str| {
+        if input.trim().is_empty() {
+            Ok(Validation::Invalid("Input cannot be empty.".into()))
+        } else if input.len() > 140 {
+            Ok(Validation::Invalid("Input too long (max 140 chars).".into()))
+        } else {
+            Ok(Validation::Valid)
+        }
+    };
+
+    Text::new(prompt)
+        .with_validator(validator)
+        .prompt()
+        .map_err(|e| format!("Prompt failed: {}", e))
+}
+
+fn confirm_prompt(prompt: &str) -> Result<bool, String> {
+    Confirm::new(prompt)
+        .with_default(true)
+        .prompt()
+        .map_err(|e| format!("Prompt failed: {}", e))
+}
+
+fn multiselect_prompt(prompt: &str) -> Result<Vec<String>, String> {
+    let options = vec![
+        "entry", "start_now", "init", "nvidia", "pull",
+        "root", "unshare_ipc", "unshare_netns",
+        "unshare_process", "unshare_devsys", "unshare_all",
+    ];
+
+    let selected = MultiSelect::new(prompt, options)
+        .prompt()
+        .map_err(|e| format!("Prompt failed: {}", e))?;
+
+    Ok(selected.into_iter().map(|s| s.to_string()).collect())
+}
