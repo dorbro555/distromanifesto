@@ -1,6 +1,7 @@
 pub mod setup;
 pub mod manifest;
 pub mod wizard;
+pub mod verify;
 // pub mod utils;
 
 pub use setup::ensure_hidden_dir;
