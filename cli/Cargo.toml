@@ -2,7 +2,17 @@
 name = "distromanifesto"
 version = "0.1.0"
 edition = "2021"
+description = "A TUI wizard for creating and managing Distrobox manifest files."
+license = "MIT"
+authors = ["Alex Hernandez ahern077@gmail.com"]
+repository = "https://github.com/dorbro555/distromanifesto"
 
 [dependencies]
+anyhow = "1"              # For ergonomic error handling
+dirs = "5"                # To find user directories
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"              # Config or manifest serialization
+crossterm = "0.27"        # Terminal input/output
+ratatui = "0.26"          # For the TUI wizard interface
 clap = { version = "4.0", features = ["derive"] }
 inquire = "0.7.5"
