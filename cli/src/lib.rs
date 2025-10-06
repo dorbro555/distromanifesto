@@ -7,3 +7,4 @@ pub mod verify;
 pub use setup::ensure_hidden_dir;
 // pub use manifest::Manifest;
 pub use wizard::launch_wizard;
+pub use verify::verify_manifest;
