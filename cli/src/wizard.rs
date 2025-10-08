@@ -71,7 +71,7 @@ pub fn launch_wizard() -> Result<()> {
     // Step 5: flags
     let enabled_flags = multiselect_prompt("Select which flags you’d like to enable:")?;
 
-    let mut manifest_content = build_manifest(
+    let manifest_content = build_manifest(
         &container_name,
         &base_image,
         &additional_packages,
@@ -89,8 +89,22 @@ pub fn launch_wizard() -> Result<()> {
         Ok(()) => {
             println!("✅ Manifest verification passed.");
             if Confirm::new("Save this manifest?").with_default(true).prompt()? {
-                save_manifest(&container_name, &manifest_content)?;
-                println!("✅ Saved.");
+                let saved_path = save_manifest(&container_name, &manifest_content)?;
+                println!("✅ Saved at {}.", saved_path.display());
+
+                if Confirm::new(&format!(
+                    "Would you like to run 'distrobox assemble create --file {}'?",
+                    saved_path.display()
+                ))
+                .with_default(false)
+                .prompt()? {
+                    if let Err(e) = Command::new("distrobox")
+                        .args(["assemble", "create", "--file", &saved_path.display().to_string()])
+                        .status()
+                    {
+                        eprintln!("⚠️ Failed to execute distrobox: {}", e);
+                    }
+                }
             } else {
                 println!("Aborted: manifest not saved.");
             }
@@ -139,7 +153,7 @@ fn optional_text_prompt(prompt: &str) -> Result<String> {
     Ok(input.trim().to_string())
 }
 
-fn save_manifest(name: &str, content: &str) -> Result<()> {
+fn save_manifest(name: &str, content: &str) -> Result<std::path::PathBuf> {
     let base = crate::setup::ensure_hidden_dir()
         .map_err(|e| anyhow!("Failed to ensure config dir: {}", e))?;
 
@@ -151,7 +165,7 @@ fn save_manifest(name: &str, content: &str) -> Result<()> {
 
     fs::write(&path, content)?;
 
-    Ok(())
+    Ok(path)
 }
 
 fn multiselect_prompt(prompt: &str) -> Result<String> {
