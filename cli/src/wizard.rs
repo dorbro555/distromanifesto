@@ -1,115 +1,142 @@
 use anyhow::{anyhow, Result};
-use inquire::{Confirm, MultiSelect, Select, Text, validator::Validation};
+use inquire::{Confirm, MultiSelect, Select, Text};
 use std::{env, fs, process::Command};
 
 /// Entry point for the wizard. This version finds ~/.distromanifesto itself.
 pub fn launch_wizard() -> Result<()> {
     println!("\n🧙 Welcome to the Distro Manifesto Wizard!\n");
 
-    // Initial prompts (fields-based)
-    let mut container_name = text_prompt("What should the container be named?")?;
-    let mut base_image = text_prompt("Enter the base image (e.g. archlinux:latest):")?;
-    let mut init_hooks_input = Text::new("Init hooks (comma separated, e.g. 'setup.sh,postinstall.sh'). Leave blank for none:")
-        .with_validator(|input: &str| {
-            if input.len() > 1000 {
-                Ok(Validation::Invalid("Too long.".into()))
+    // Step 1: basic info
+    let container_name = required_text_prompt("What should the container be named?")?;
+    let base_image = required_text_prompt("Enter the base image (e.g. archlinux:latest):")?;
+
+    // Step 2: additional packages (space separated)
+    let additional_packages = optional_text_prompt(
+        "Enter additional packages (space separated, leave blank for none):",
+    )?;
+
+    // Step 3: home directory handling
+    let home_choice = Select::new(
+        "Choose how to handle the container's home directory:",
+        vec![
+            "Create a new home inside ~/.distromanifesto/homes",
+            "Use an existing home inside ~/.distromanifesto/homes",
+            "Specify a full path manually",
+        ],
+    )
+    .prompt()?;
+
+    let home_value = match home_choice {
+        "Create a new home inside ~/.distromanifesto/homes" => {
+            let base = crate::setup::ensure_hidden_dir()?;
+            let homes_dir = base.join("homes");
+            fs::create_dir_all(&homes_dir)?;
+            let home_path = homes_dir.join(&container_name);
+            fs::create_dir_all(&home_path)?;
+            format!("{}", home_path.display())
+        }
+        "Use an existing home inside ~/.distromanifesto/homes" => {
+            let base = crate::setup::ensure_hidden_dir()?;
+            let homes_dir = base.join("homes");
+            fs::create_dir_all(&homes_dir)?;
+
+            let entries = fs::read_dir(&homes_dir)?
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().into_string().unwrap_or_default())
+                .collect::<Vec<_>>();
+
+            if entries.is_empty() {
+                println!("No existing homes found. Creating a new one instead.");
+                let new_home = homes_dir.join(&container_name);
+                fs::create_dir_all(&new_home)?;
+                format!("{}", new_home.display())
             } else {
-                Ok(Validation::Valid)
-            }
-        })
-        .prompt()?;
-    let mut home_value = text_prompt("Which home directory should the container use? (e.g. /home/user)")?;
-    let mut enabled_flags = multiselect_prompt("Select which flags you’d like to enable:")?;
-
-    let mut raw_edited_content: Option<String> = None;
-
-    loop {
-        let manifest_content = {
-            let init_hooks_formatted = if init_hooks_input.trim().is_empty() {
-                String::new()
-            } else {
-                format!("init_hooks=\"{}\"\n", init_hooks_input.trim())
-            };
-
-            format!(
-                "[{}]\nimage=\"{}\"\n{}home=\"{}\"\n{}\n",
-                container_name, base_image, init_hooks_formatted, home_value, enabled_flags
-            )
-        };
-
-        let manifest_content = if let Some(ref raw) = raw_edited_content {
-            raw.clone()
-        } else {
-            manifest_content
-        };
-
-        println!("\n──────────────────────────────");
-        println!("Manifest preview:\n\n{}", manifest_content);
-        println!("──────────────────────────────\n");
-
-        match crate::verify::verify_manifest(&manifest_content) {
-            Ok(()) => {
-                println!("✅ Manifest verification passed.");
-                if Confirm::new("Save this manifest?")
-                    .with_default(true)
-                    .prompt()? {
-                    save_manifest(&container_name, &manifest_content)?;
-                    println!("✅ Saved.");
-                } else {
-                    println!("Aborted: manifest not saved.");
-                }
-                break;
-            }
-            Err(err) => {
-                eprintln!("⚠️ Manifest verification failed: {}\n", err);
-
-                let choices = vec![
-                    "Edit fields (re-prompt individual fields)",
-                    "Edit raw (open $EDITOR)",
-                    "Re-run verification",
-                    "Save anyway",
-                    "Cancel / Abort",
-                ];
-
-                let choice = Select::new("What would you like to do?", choices).prompt()?;
-
-                match choice.as_ref() {
-                    "Edit fields (re-prompt individual fields)" => {
-                        container_name = text_prompt_with_default("Container name:", &container_name)?;
-                        base_image = text_prompt_with_default("Base image (e.g. archlinux:latest):", &base_image)?;
-                        init_hooks_input = Text::new("Init hooks (comma separated), leave blank for none:")
-                            .with_placeholder(&init_hooks_input)
-                            .prompt()?;
-                        home_value = text_prompt_with_default("Home directory (e.g. /home/user):", &home_value)?;
-                        enabled_flags = multiselect_prompt_with_defaults("Select flags to enable:", &enabled_flags)?;
-                        raw_edited_content = None;
-                        continue;
-                    }
-                    "Edit raw (open $EDITOR)" => {
-                        let edited = open_in_editor(&manifest_content)?;
-                        raw_edited_content = Some(edited);
-                        continue;
-                    }
-                    "Re-run verification" => {
-                        println!("🔁 Re-verifying manifest...\n");
-                        continue;
-                    }
-                    "Save anyway" => {
-                        save_manifest(&container_name, &manifest_content)?;
-                        println!("✅ Saved despite verification errors.");
-                        break;
-                    }
-                    "Cancel / Abort" => {
-                        println!("Aborted: manifest not saved.");
-                        break;
-                    }
-                    _ => unreachable!(),
-                }
+                let choice = Select::new("Select an existing home:", entries).prompt()?;
+                format!("{}/{}", homes_dir.display(), choice)
             }
         }
+        "Specify a full path manually" => required_text_prompt("Enter full path for home directory:")?,
+        _ => unreachable!(),
+    };
+
+    // Step 4: hook commands (optional)
+    let pre_init_hooks = optional_text_prompt(
+        "Commands to run *before* package installation (e.g. 'echo pre'), leave blank for none:",
+    )?;
+
+    let init_hooks = optional_text_prompt(
+        "Commands to run *after* package installation (e.g. 'cd ~ && git clone ...'), leave blank for none:",
+    )?;
+
+    // Step 5: flags
+    let enabled_flags = multiselect_prompt("Select which flags you’d like to enable:")?;
+
+    let mut manifest_content = build_manifest(
+        &container_name,
+        &base_image,
+        &additional_packages,
+        &home_value,
+        &pre_init_hooks,
+        &init_hooks,
+        &enabled_flags,
+    );
+
+    println!("\n──────────────────────────────");
+    println!("Manifest preview:\n\n{}", manifest_content);
+    println!("──────────────────────────────\n");
+
+    match crate::verify::verify_manifest(&manifest_content) {
+        Ok(()) => {
+            println!("✅ Manifest verification passed.");
+            if Confirm::new("Save this manifest?").with_default(true).prompt()? {
+                save_manifest(&container_name, &manifest_content)?;
+                println!("✅ Saved.");
+            } else {
+                println!("Aborted: manifest not saved.");
+            }
+        }
+        Err(err) => eprintln!("⚠️ Manifest verification failed: {}\n", err),
     }
 
     Ok(())
+}
+
+fn build_manifest(
+    container_name: &str,
+    base_image: &str,
+    additional_packages: &str,
+    home_value: &str,
+    pre_init_hooks: &str,
+    init_hooks: &str,
+    enabled_flags: &str,
+) -> String {
+    let mut content = format!("[{}]\nimage=\"{}\"\n", container_name, base_image);
+
+    if !additional_packages.trim().is_empty() {
+        content.push_str(&format!("additional_packages=\"{}\"\n", additional_packages.trim()));
+    }
+
+    content.push_str(&format!("home={}\n", home_value));
+
+    if !pre_init_hooks.trim().is_empty() {
+        content.push_str(&format!("pre_init_hooks={}\n", pre_init_hooks.trim()));
+    }
+
+    if !init_hooks.trim().is_empty() {
+        content.push_str(&format!("init_hooks={}\n", init_hooks.trim()));
+    }
+
+    content.push_str(enabled_flags);
+    content
+}
+
+fn required_text_prompt(prompt: &str) -> Result<String> {
+    Ok(Text::new(prompt).prompt()?)
+}
+
+fn optional_text_prompt(prompt: &str) -> Result<String> {
+    let input = Text::new(prompt).prompt()?;
+    Ok(input.trim().to_string())
 }
 
 fn save_manifest(name: &str, content: &str) -> Result<()> {
@@ -117,71 +144,14 @@ fn save_manifest(name: &str, content: &str) -> Result<()> {
         .map_err(|e| anyhow!("Failed to ensure config dir: {}", e))?;
 
     let manifest_dir = base.join("manifests");
-    fs::create_dir_all(&manifest_dir)
-        .map_err(|e| anyhow!("Failed to create manifests dir: {}", e))?;
+    fs::create_dir_all(&manifest_dir)?;
 
     let filename = format!("{}.ini", name.replace(' ', "_"));
     let path = manifest_dir.join(filename);
 
-    fs::write(&path, content)
-        .map_err(|e| anyhow!("Failed to write manifest file {}: {}", path.display(), e))?;
+    fs::write(&path, content)?;
 
     Ok(())
-}
-
-fn open_in_editor(initial: &str) -> Result<String> {
-    let mut tmp = env::temp_dir();
-    let fname = format!("distromanifesto_edit_{}.ini", std::process::id());
-    tmp.push(fname);
-
-    fs::write(&tmp, initial)
-        .map_err(|e| anyhow!("Failed to create temporary file: {}", e))?;
-
-    let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".into());
-
-    let status = Command::new(&editor)
-        .arg(&tmp)
-        .status()
-        .map_err(|e| anyhow!("Failed to spawn editor '{}': {}", editor, e))?;
-
-    if !status.success() {
-        return Err(anyhow!("Editor returned non-zero exit code"));
-    }
-
-    let edited = fs::read_to_string(&tmp)
-        .map_err(|e| anyhow!("Failed to read edited file: {}", e))?;
-
-    let _ = fs::remove_file(&tmp);
-
-    Ok(edited)
-}
-
-fn text_prompt(prompt: &str) -> Result<String> {
-    let validator = |input: &str| {
-        if input.trim().is_empty() {
-            Ok(Validation::Invalid("This field cannot be empty.".into()))
-        } else if input.len() > 140 {
-            Ok(Validation::Invalid("Max 140 characters.".into()))
-        } else {
-            Ok(Validation::Valid)
-        }
-    };
-
-    Ok(Text::new(prompt).with_validator(validator).prompt()?)
-}
-
-fn text_prompt_with_default(prompt: &str, default: &str) -> Result<String> {
-    let validator = |input: &str| {
-        if input.trim().is_empty() {
-            Ok(Validation::Invalid("This field cannot be empty.".into()))
-        } else if input.len() > 140 {
-            Ok(Validation::Invalid("Max 140 characters.".into()))
-        } else {
-            Ok(Validation::Valid)
-        }
-    };
-
-    Ok(Text::new(prompt).with_validator(validator).with_placeholder(default).prompt()?)
 }
 
 fn multiselect_prompt(prompt: &str) -> Result<String> {
@@ -196,8 +166,4 @@ fn multiselect_prompt(prompt: &str) -> Result<String> {
         formatted_flags.push_str(&format!("{}=true\n", flag));
     }
     Ok(formatted_flags)
-}
-
-fn multiselect_prompt_with_defaults(prompt: &str, _defaults: &str) -> Result<String> {
-    multiselect_prompt(prompt)
 }
