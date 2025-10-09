@@ -1,8 +1,5 @@
 use std::path::PathBuf;
 use clap::{Parser, Subcommand};
-// use distromanifesto::{
-    // ensure_hidden_dir, 
-    // launch_wizard};
 use anyhow::Result;
 
 mod setup;
@@ -11,79 +8,47 @@ mod verify;
 
 #[derive(Parser)]
 #[command(name = "distromanifesto")]
-#[command(about = "A TUI and CLI wizard for creating Distrobox manifest files", long_about = None)]
+#[command(author = "")]
+#[command(version = "1.0")]
+#[command(about = "A friendly wizard for creating and managing distrobox manifest files.", long_about = None)]
 struct Cli {
-    /// Optional name to operate on
-    name: Option<String>,
-
-    /// Path to a config file
-    #[arg(short, long, value_name = "FILE")]
-    config: Option<PathBuf>,
-
-    /// Turn debugging information on (use multiple times for more verbosity)
-    #[arg(short, long, action = clap::ArgAction::Count)]
-    debug: u8,
-
-    /// Subcommands
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Runs the interactive manifest wizard
+    /// Create a new manifest with an interactive wizard
     Wizard,
-    // /// Verifies a manifest file’s syntax
-    // Verify {
-    //     /// Path to manifest file
-    //     #[arg(value_name = "FILE")]
-    //     file: PathBuf,
-    // },
-    // /// Placeholder test command
-    // Test {
-    //     /// Lists test values
-    //     #[arg(short, long)]
-    //     list: bool,
-    // },
+    /// Verify the syntax of a manifest file
+    Verify {
+        /// The path to the manifest file to verify
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Handle debug verbosity
-    // match cli.debug {
-    //     0 => {}
-    //     1 => println!("Debug mode: basic logging enabled"),
-    //     2 => println!("Debug mode: verbose output"),
-    //     _ => println!("Debug mode: insane verbosity (good luck)"),
-    // }
+    // Ensure the ~/.distromanifesto directory and its subdirectories exist.
+    setup::ensure_hidden_dir()?;
 
-    // Ensure ~/.distromanifesto structure exists
-    // let hidden_dir = ensure_hidden_dir()?;
-
-    // Match subcommands
     match cli.command {
-        // Some(Commands::Wizard { filepath }) => {
-        //     println!("Launching wizard...");
-        //     launch_wizard(PathBuf::from(filepath))?;
-        // }
-        // Some(Commands::Verify { file }) => {
-        //     println!("Verifying manifest file: {:?}", file);
-        //     // TODO: Add syntax checking logic in manifest.rs
-        // }
-        // Some(Commands::Test { list }) => {
-        //     if *list {
-        //         println!("Test command executed: listing items...");
-        //     } else {
-        //         println!("Test command executed: no list flag provided.");
-        //     }
-        // }
-        // None => {
-        //     // If no subcommand, default to wizard
-        //     println!("No subcommand provided — launching wizard by default.");
-        //     launch_wizard(hidden_dir)?;
-        // }
-        Commands::Wizard => wizard::launch_wizard()?,
+        Some(Commands::Wizard) => {
+            wizard::launch_wizard()?;
+        }
+        Some(Commands::Verify { file }) => {
+            let content = std::fs::read_to_string(&file)?;
+            match verify::verify_manifest(&content) {
+                Ok(_) => println!("✅ Manifest at '{}' is valid.", file.display()),
+                Err(e) => eprintln!("❌ Manifest validation failed: {}", e),
+            }
+        }
+        None => {
+            // Default to the wizard if no subcommand is provided
+            wizard::launch_wizard()?;
+        }
     }
 
     Ok(())
