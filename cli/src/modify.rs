@@ -6,19 +6,94 @@ use crossterm::{
 };
 use ratatui::{
     backend::Backend,
-    backend::CrosstermBackend, // <-- FIX 1: 'backend' is singular
-    layout::{Constraint, Direction, Layout}, // <-- FIX 2: Removed unused 'Rect'
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout},
     terminal::{Frame, Terminal},
-    widgets::{Block, Borders, List, ListItem},
+    widgets::{Block, Borders, List, ListItem, ListState}, // 1. Import ListState
     prelude::*,
 };
-use ini::Ini; // This import is correct
+use ini::Ini;
 use std::{io, path::Path, time::Duration};
+
+/// A struct to hold the application's state.
+struct App<'a> {
+    conf: Ini,
+    items: Vec<ListItem<'a>>,
+    state: ListState,
+}
+
+impl<'a> App<'a> {
+    /// Creates a new App instance from a loaded Ini configuration.
+    fn new(conf: Ini) -> App<'a> {
+        let mut state = ListState::default();
+        if !conf.is_empty() {
+            state.select(Some(0)); // Select the first item by default
+        }
+        
+        let mut app = App {
+            conf,
+            items: Vec::new(), // Will be populated by refresh_items
+            state,
+        };
+        app.refresh_items(); // Populate the items list
+        app
+    }
+
+    /// Re-generates the list of items from the `conf`.
+    fn refresh_items(&mut self) {
+        let mut items = Vec::new();
+        for (sec, prop) in self.conf.iter() {
+            let section_name = sec.unwrap_or("Global");
+            items.push(
+                ListItem::new(format!("[{section_name}]"))
+                    .style(Style::default().fg(Color::Green).bold())
+            );
+            for (key, value) in prop.iter() {
+                items.push(ListItem::new(format!("  {key} = {value}")));
+            }
+        }
+        self.items = items;
+    }
+
+    /// Moves the selection to the next item.
+    fn next(&mut self) {
+        let i = match self.state.selected() {
+            Some(i) => {
+                if i >= self.items.len() - 1 {
+                    0
+                } else {
+                    i + 1
+                }
+            }
+            None => 0,
+        };
+        self.state.select(Some(i));
+    }
+
+    /// Moves the selection to the previous item.
+    fn previous(&mut self) {
+        let i = match self.state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.items.len() - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.state.select(Some(i));
+    }
+}
+
 
 /// Launches the TUI editor for a manifest file.
 pub fn launch_editor(file_path: &Path) -> Result<()> {
-    // Load the INI file using rust-ini
-    let mut conf = Ini::load_from_file(file_path)?;
+    // Load the INI file
+    let conf = Ini::load_from_file(file_path)?;
+
+    // 2. Create the new App state
+    let mut app = App::new(conf);
 
     // Setup terminal
     enable_raw_mode()?;
@@ -27,8 +102,8 @@ pub fn launch_editor(file_path: &Path) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Create app and run it
-    let res = run_app(&mut terminal, &mut conf);
+    // 3. Pass the mutable app state to the run loop
+    let res = run_app(&mut terminal, &mut app);
 
     // Restore terminal
     disable_raw_mode()?;
@@ -47,18 +122,21 @@ pub fn launch_editor(file_path: &Path) -> Result<()> {
 }
 
 /// Main application loop.
-fn run_app<B: Backend>(terminal: &mut Terminal<B>, conf: &mut Ini) -> io::Result<()> {
+// 4. Update run_app to take our App struct
+fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
     loop {
-        terminal.draw(|f| ui(f, conf))?;
+        terminal.draw(|f| ui(f, app))?; // Pass the app to the ui function
 
         if event::poll(Duration::from_millis(250))? {
             if let Event::Key(key) = event::read()? {
-                if KeyCode::Char('q') == key.code {
-                    // TODO: Add 's' to save
-                    // if key.code == KeyCode::Char('s') {
-                    //     conf.write_to_file("path/to/save.ini").unwrap();
-                    // }
-                    return Ok(());
+                // 5. Handle navigation keybinds
+                match key.code {
+                    KeyCode::Char('q') => return Ok(()),
+                    KeyCode::Down => app.next(),
+                    KeyCode::Up => app.previous(),
+                    // TODO: Add KeyCode::Enter to trigger editing
+                    // TODO: Add KeyCode::Char('s') to save
+                    _ => {}
                 }
             }
         }
@@ -66,7 +144,8 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, conf: &mut Ini) -> io::Result
 }
 
 /// Renders the user interface.
-fn ui<B: Backend>(f: &mut Frame<B>, conf: &Ini) {
+// 6. Update ui to take App and render the state
+fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let size = f.size();
     
     // Main layout
@@ -86,30 +165,15 @@ fn ui<B: Backend>(f: &mut Frame<B>, conf: &Ini) {
 
     let footer_block = Block::default()
         .borders(Borders::ALL)
-        .title(" (q) Quit | (s) Save | (Enter) Edit ");
+        .title(" (q) Quit | (↑/↓) Navigate | (Enter) Edit | (s) Save ");
     f.render_widget(footer_block, chunks[2]);
 
-    // Convert INI to list items
-    let mut items = Vec::new();
-    for (sec, prop) in conf.iter() {
-        // --- FIX 3: Handle the Option<&str> ---
-        let section_name = sec.unwrap_or("Global"); // Use "Global" if section is None
-        items.push(
-            ListItem::new(format!("[{section_name}]")) // Use the new variable
-                .style(Style::default().fg(Color::Green).bold())
-        );
-        // --- End of Fix ---
-
-        for (key, value) in prop.iter() {
-            items.push(ListItem::new(format!("  {key} = {value}")));
-        }
-    }
-
-    let list = List::new(items)
+    // 7. Create the list from the app's items
+    let list = List::new(app.items.clone()) // Clone items to pass ownership
         .block(Block::default().title("Manifest").borders(Borders::ALL))
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol(">> ");
 
-    // Render the list in the content area
-    f.render_widget(list, chunks[1]);
+    // 8. Render the list as a *Stateful* widget, passing our state
+    f.render_stateful_widget(list, chunks[1], &mut app.state);
 }
