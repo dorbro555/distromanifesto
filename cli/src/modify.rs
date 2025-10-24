@@ -4,6 +4,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+// We MUST alias our ini crate to avoid conflicts
 use distro_ini::Ini;
 use ratatui::{
     backend::Backend,
@@ -13,46 +14,80 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     prelude::*,
 };
-use std::{io, path::{Path, PathBuf}, time::Duration};
+use std::{fs, io, path::{Path, PathBuf}, time::Duration};
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
-/// Enum to track the application's current mode.
+// --- NEW: Define the full distrobox key schema ---
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KeyType {
+    String,
+    StringList,
+    Bool,
+}
+
+#[derive(Clone)]
+struct SchemaItem {
+    key: &'static str,
+    key_type: KeyType,
+}
+
+// All valid keys based on user-provided list
+const SCHEMA: &[SchemaItem] = &[
+    SchemaItem { key: "image", key_type: KeyType::String },
+    SchemaItem { key: "clone", key_type: KeyType::String },
+    SchemaItem { key: "home", key_type: KeyType::String },
+    SchemaItem { key: "exported_bins_path", key_type: KeyType::String },
+    SchemaItem { key: "additional_flags", key_type: KeyType::StringList },
+    SchemaItem { key: "additional_packages", key_type: KeyType::StringList },
+    SchemaItem { key: "init_hooks", key_type: KeyType::StringList },
+    SchemaItem { key: "pre_init_hooks", key_type: KeyType::StringList },
+    SchemaItem { key: "volume", key_type: KeyType::StringList },
+    SchemaItem { key: "exported_apps", key_type: KeyType::StringList },
+    SchemaItem { key: "exported_bins", key_type: KeyType::StringList },
+    SchemaItem { key: "entry", key_type: KeyType::Bool },
+    SchemaItem { key: "start_now", key_type: KeyType::Bool },
+    SchemaItem { key: "init", key_type: KeyType::Bool },
+    SchemaItem { key: "nvidia", key_type: KeyType::Bool },
+    SchemaItem { key: "pull", key_type: KeyType::Bool },
+    SchemaItem { key: "root", key_type: KeyType::Bool },
+    SchemaItem { key: "unshare_ipc", key_type: KeyType::Bool },
+    SchemaItem { key: "unshare_netns", key_type: KeyType::Bool },
+    SchemaItem { key: "unshare_process", key_type: KeyType::Bool },
+    SchemaItem { key: "unshare_devsys", key_type: KeyType::Bool },
+    SchemaItem { key: "unshare_all", key_type: KeyType::Bool },
+];
+
 enum AppMode {
     Navigating,
     Editing,
     ConfirmDelete,
-    AddingKey,
-    AddingValue,
-    Saved, // --- NEW: For the save notification ---
+    AddingKey(ListState), // NEW: State for selecting a key from the schema
+    AddingValue,         // NEW: State for entering the value
+    Saved,               // NEW: State for the "Saved!" notification
 }
 
-/// Enum to represent a displayable line in our list.
 #[derive(Clone)]
 enum DisplayItem {
     Section(String),
     Property(String, String, String), // section, key, value
 }
 
-/// A struct to hold the application's state.
 struct App<'a> {
     file_path: PathBuf,
-    // `conf` is only used for *loading* and as a temporary object for saving.
-    // `items` is the single source of truth.
-    conf: Ini, 
-    items: Vec<DisplayItem>,
+    items: Vec<DisplayItem>, // This is the *only* source of truth
     list_items: Vec<ListItem<'a>>,
     state: ListState,
     mode: AppMode,
     value_input: Input,
-    key_input: Input,
     current_section: String,
-    editing_key: Option<(String, String)>,
-    status_timer: u8, // --- NEW: Timer for the notification ---
+    current_add_item: Option<SchemaItem>, // NEW: The key we are adding
+    current_bool_value: bool,             // NEW: For bool toggles
+    status_timer: u8,
 }
 
 impl<'a> App<'a> {
-    /// Creates a new App instance from a loaded Ini configuration.
     fn new(conf: Ini, file_path: &Path) -> App<'a> {
         let mut state = ListState::default();
         if !conf.is_empty() {
@@ -61,44 +96,32 @@ impl<'a> App<'a> {
 
         let mut app = App {
             file_path: file_path.to_path_buf(),
-            conf, // This is the INI object we loaded
-            items: Vec::new(),
+            items: Vec::new(), // Will be populated by parse_conf_to_items
             list_items: Vec::new(),
             state,
             mode: AppMode::Navigating,
             value_input: Input::default(),
-            key_input: Input::default(),
             current_section: "Global".to_string(),
-            editing_key: None,
-            status_timer: 0, // --- NEW ---
+            current_add_item: None,
+            current_bool_value: true, // Default for bool add
+            status_timer: 0,
         };
-        // CRITICAL: We parse the loaded `conf` into our *own* list structure.
-        app.parse_conf_to_items();
+        // Use the loaded conf to populate our source of truth
+        app.parse_conf_to_items(conf);
         app
     }
 
-    /// --- NEW: Renamed from `refresh_items` ---
-    /// Parses the `conf` object into our ordered list view.
-    /// This should only be called once at the start.
-    fn parse_conf_to_items(&mut self) {
+    /// Parses the `conf` object into our ordered `items` list.
+    /// This is the *only* time we read from the `Ini` object.
+    fn parse_conf_to_items(&mut self, conf: Ini) {
         let mut items = Vec::new();
-        let mut list_items = Vec::new();
-
-        for (sec, prop) in self.conf.iter() {
+        for (sec, prop) in conf.iter() {
             let section_name = sec.unwrap_or("Global").to_string();
             items.push(DisplayItem::Section(section_name.clone()));
-            list_items.push(
-                ListItem::new(format!("[{section_name}]"))
-                    .style(Style::default().fg(Color::Green).bold()),
-            );
             
-            // --- FIX: Use `iter_mut_appends` to read duplicate keys ---
-            // We need to read the properties in the order they appear
-            // `prop.iter()` uses a HashMap and jumbles them.
-            // A bit of a hack: we'll re-read the file content.
-            // This is a limitation of rust-ini's read API.
-            // For now, we'll stick to the jumbled-on-load, correct-on-save logic.
-            // Let's refine `refresh_list_items` instead.
+            // We iterate over the *properties* from the Ini object
+            // This does *not* preserve duplicate keys on load, but it's
+            // the best we can do with the library. Our save logic fixes this.
             for (key, value) in prop.iter() {
                 items.push(DisplayItem::Property(
                     section_name.clone(),
@@ -108,11 +131,10 @@ impl<'a> App<'a> {
             }
         }
         self.items = items;
-        // This function will generate list_items from self.items
         self.refresh_list_items_from_items();
     }
     
-    /// --- NEW: Re-generates the `list_items` from our `items` source of truth ---
+    /// Re-generates the `list_items` (for drawing) from our `items` source of truth.
     fn refresh_list_items_from_items(&mut self) {
         let mut list_items = Vec::new();
         for item in &self.items {
@@ -131,8 +153,6 @@ impl<'a> App<'a> {
         self.list_items = list_items;
     }
 
-
-    /// Moves the selection to the next item.
     fn next(&mut self) {
         let i = match self.state.selected() {
             Some(i) => {
@@ -147,7 +167,6 @@ impl<'a> App<'a> {
         self.state.select(Some(i));
     }
 
-    /// Moves the selection to the previous item.
     fn previous(&mut self) {
         let i = match self.state.selected() {
             Some(i) => {
@@ -162,13 +181,12 @@ impl<'a> App<'a> {
         self.state.select(Some(i));
     }
 
-    /// Enters editing mode for the currently selected item.
     fn start_editing(&mut self) {
         if let Some(index) = self.state.selected() {
             match &self.items[index] {
                 DisplayItem::Property(section, key, value) => {
                     self.mode = AppMode::Editing;
-                    self.editing_key = Some((section.clone(), key.clone()));
+                    // We don't use editing_key, but we'll set value_input
                     self.value_input = Input::new(value.clone());
                 }
                 DisplayItem::Section(_) => {}
@@ -176,60 +194,73 @@ impl<'a> App<'a> {
         }
     }
 
-    /// Cancels the current edit.
     fn cancel_editing(&mut self) {
         self.mode = AppMode::Navigating;
-        self.editing_key = None;
         self.value_input = Input::default();
     }
 
-    /// Submits the current edit, saving it to the `conf`.
     fn submit_editing(&mut self) {
-        if let (Some((section, key)), Some(index)) = 
-            (self.editing_key.clone(), self.state.selected()) {
-            
-            let new_value = self.value_input.value().to_string();
-            
-            // --- FIX: Only update our `items` source of truth ---
-            self.items[index] = DisplayItem::Property(
-                section.clone(),
-                key.clone(),
-                new_value.clone()
-            );
-            self.list_items[index] = ListItem::new(format!("  {key} = {new_value}"));
+        if let Some(index) = self.state.selected() {
+            if let DisplayItem::Property(section, key, _) = &self.items[index].clone() {
+                let new_value = self.value_input.value().to_string();
+                
+                // Update our source of truth
+                self.items[index] = DisplayItem::Property(
+                    section.clone(),
+                    key.clone(),
+                    new_value.clone()
+                );
+                // Update the visual list
+                self.list_items[index] = ListItem::new(format!("  {key} = {new_value}"));
 
-            self.cancel_editing();
-            self.state.select(Some(index));
+                self.cancel_editing();
+                self.state.select(Some(index));
+            }
         }
     }
 
-    /// Saves the current in-memory `conf` back to the file.
+    /// --- FIX: This is the new save logic ---
+    /// Saves the `items` list back to the file, preserving order and duplicates.
     fn save_to_file(&mut self) -> Result<()> {
-        let mut new_conf = Ini::new();
+        let mut file_content = String::new();
+        let mut current_section = "".to_string();
+
         for item in &self.items {
-            if let DisplayItem::Property(section, key, value) = item {
-                let section_name = if section == "Global" { None } else { Some(section.as_str()) };
-                // --- FIX: Use `append` to allow duplicate keys ---
-                new_conf.with_section(section_name).set(key, value);
+            match item {
+                DisplayItem::Section(section) => {
+                    if section != "Global" {
+                        file_content.push_str(&format!("\n[{section}]\n"));
+                        current_section = section.clone();
+                    } else {
+                        current_section = "Global".to_string();
+                    }
+                }
+                DisplayItem::Property(section, key, value) => {
+                    // This logic ensures properties are under the correct section
+                    if *section != current_section && section == "Global" {
+                         // We don't write a header for "Global"
+                    } else if *section != current_section {
+                        file_content.push_str(&format!("\n[{section}]\n"));
+                        current_section = section.clone();
+                    }
+                    file_content.push_str(&format!("{key} = {value}\n"));
+                }
             }
         }
-        new_conf.write_to_file(&self.file_path)?;
 
-        // --- NEW: Trigger the save notification ---
+        fs::write(&self.file_path, file_content)?;
+
         self.mode = AppMode::Saved;
-        self.status_timer = 10; // ~1 second (10 ticks * 100ms)
-        
+        self.status_timer = 10; // ~1 second
         Ok(())
     }
 
-    /// Deletes the currently selected item.
     fn delete_selected(&mut self) {
         if let Some(index) = self.state.selected() {
             match &self.items[index] {
                 DisplayItem::Property(..) => {
-                    // --- FIX: Only remove from our `items` source of truth ---
                     self.items.remove(index);
-                    self.list_items.remove(index);
+                    self.list_items.remove(index); // Remove from both
 
                     let new_index = if index > 0 { index - 1 } else { 0 };
                     if self.list_items.is_empty() {
@@ -238,13 +269,12 @@ impl<'a> App<'a> {
                         self.state.select(Some(new_index));
                     }
                 }
-                DisplayItem::Section(_) => {}
+                DisplayItem::Section(_) => {} // Can't delete sections yet
             }
         }
         self.mode = AppMode::Navigating;
     }
 
-    /// Enters delete confirmation mode if a property is selected.
     fn start_confirm_delete(&mut self) {
         if let Some(index) = self.state.selected() {
             if let DisplayItem::Property(..) = &self.items[index] {
@@ -253,13 +283,15 @@ impl<'a> App<'a> {
         }
     }
 
-    /// Exits delete confirmation mode.
     fn cancel_delete(&mut self) {
         self.mode = AppMode::Navigating;
     }
 
+    // --- NEW: All "Add" logic is refactored ---
+
     /// Enters the 'AddingKey' mode.
     fn start_adding(&mut self) {
+        // Determine the current section
         if let Some(index) = self.state.selected() {
             match &self.items[index] {
                 DisplayItem::Section(section) => {
@@ -270,60 +302,77 @@ impl<'a> App<'a> {
                 }
             }
         } else {
-            self.current_section = "Global".to_string();
+            // Default if list is empty
+            self.current_section = "Global".to_string(); 
         }
 
-        self.key_input = Input::default();
-        self.value_input = Input::default();
-        self.mode = AppMode::AddingKey;
+        let mut list_state = ListState::default();
+        list_state.select(Some(0));
+        self.mode = AppMode::AddingKey(list_state);
     }
 
-    /// Moves from 'AddingKey' to 'AddingValue'.
+    /// Submits the selected key and moves to 'AddingValue'.
     fn submit_key(&mut self) {
-        if !self.key_input.value().is_empty() {
-            self.mode = AppMode::AddingValue;
+        if let AppMode::AddingKey(list_state) = &mut self.mode {
+            if let Some(index) = list_state.selected() {
+                let schema_item = SCHEMA[index].clone();
+                self.current_add_item = Some(schema_item.clone());
+                
+                // Set up the correct value input
+                match schema_item.key_type {
+                    KeyType::String | KeyType::StringList => {
+                        self.value_input = Input::default();
+                    }
+                    KeyType::Bool => {
+                        self.current_bool_value = true; // Default to true
+                    }
+                }
+                self.mode = AppMode::AddingValue;
+            }
         }
     }
 
-    /// Submits the new key/value pair and adds it to the list.
+    /// Submits the new key/value pair.
     fn submit_value(&mut self) {
-        let new_key = self.key_input.value().to_string();
-        let new_value = self.value_input.value().to_string();
+        if let Some(item) = &self.current_add_item {
+            let new_key = item.key.to_string();
+            
+            // Get the value based on the type
+            let new_value = match item.key_type {
+                KeyType::String | KeyType::StringList => self.value_input.value().to_string(),
+                KeyType::Bool => self.current_bool_value.to_string(),
+            };
 
-        if new_key.is_empty() {
+            // Add to our source of truth
+            let index = self.state.selected().unwrap_or(0);
+            let insert_index = if self.items.is_empty() { 0 } else { index + 1 };
+            
+            let new_display_item = DisplayItem::Property(
+                self.current_section.clone(),
+                new_key.clone(),
+                new_value.clone()
+            );
+            
+            self.items.insert(insert_index, new_display_item);
+            
+            // Refresh the visual list
+            self.refresh_list_items_from_items();
+            
+            self.state.select(Some(insert_index));
             self.cancel_adding();
-            return;
         }
-
-        // --- FIX: Only add to our `items` source of truth ---
-        let index = self.state.selected().unwrap_or(0);
-        
-        let new_item = DisplayItem::Property(
-            self.current_section.clone(),
-            new_key.clone(),
-            new_value.clone()
-        );
-        let new_list_item = ListItem::new(format!("  {new_key} = {new_value}"));
-
-        let insert_index = if self.items.is_empty() { 0 } else { index + 1 };
-        
-        self.items.insert(insert_index, new_item);
-        self.list_items.insert(insert_index, new_list_item);
-
-        self.state.select(Some(insert_index));
-        self.cancel_adding();
     }
 
     /// Cancels the entire 'Add' operation.
     fn cancel_adding(&mut self) {
         self.mode = AppMode::Navigating;
-        self.key_input = Input::default();
+        self.current_add_item = None;
         self.value_input = Input::default();
     }
 
-    /// Goes back from 'AddingValue' to 'AddingKey'.
-    fn back_to_key(&mut self) {
-        self.mode = AppMode::AddingKey;
+    /// Toggles the boolean value in the 'AddingValue' mode.
+    fn toggle_bool_value(&mut self) {
+        self.current_bool_value = !self.current_bool_value;
     }
 }
 
@@ -361,9 +410,25 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
         terminal.draw(|f| ui(f, app))?;
 
         if event::poll(Duration::from_millis(100))? {
-            match app.mode {
-                AppMode::Navigating => {
-                    if let Event::Key(key) = event::read()? {
+            // --- NEW: Timer logic for 'Saved' mode ---
+            if let AppMode::Saved = app.mode {
+                if app.status_timer > 0 {
+                    app.status_timer -= 1;
+                } else {
+                    app.mode = AppMode::Navigating;
+                }
+                // Allow user to skip wait
+                if let Event::Key(_) = event::read()? {
+                    app.mode = AppMode::Navigating;
+                    app.status_timer = 0;
+                }
+                continue; // Skip other input
+            }
+            
+            // Handle all other input
+            if let Event::Key(key) = event::read()? {
+                match app.mode {
+                    AppMode::Navigating => {
                         match key.code {
                             KeyCode::Char('q') => return Ok(()),
                             KeyCode::Char('s') => { app.save_to_file().unwrap_or_else(|_| {}); },
@@ -375,55 +440,62 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                             _ => {}
                         }
                     }
-                }
-                AppMode::Editing => {
-                    if let Event::Key(key) = event::read()? {
+                    AppMode::Editing => {
                         match key.code {
                             KeyCode::Enter => app.submit_editing(),
                             KeyCode::Esc => app.cancel_editing(),
                             _ => { app.value_input.handle_event(&Event::Key(key)); }
                         }
                     }
-                }
-                AppMode::ConfirmDelete => {
-                    if let Event::Key(key) = event::read()? {
+                    AppMode::ConfirmDelete => {
                         match key.code {
                             KeyCode::Char('y') | KeyCode::Char('Y') => app.delete_selected(),
                             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => app.cancel_delete(),
                             _ => {}
                         }
                     }
-                }
-                AppMode::AddingKey => {
-                    if let Event::Key(key) = event::read()? {
+                    // --- NEW: Key handling for Add Wizard ---
+                    AppMode::AddingKey(ref mut list_state) => {
                         match key.code {
                             KeyCode::Enter => app.submit_key(),
                             KeyCode::Esc => app.cancel_adding(),
-                            _ => { app.key_input.handle_event(&Event::Key(key)); }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                let i = list_state.selected().unwrap_or(0);
+                                let next = if i >= SCHEMA.len() - 1 { 0 } else { i + 1 };
+                                list_state.select(Some(next));
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                let i = list_state.selected().unwrap_or(0);
+                                let prev = if i == 0 { SCHEMA.len() - 1 } else { i - 1 };
+                                list_state.select(Some(prev));
+                            }
+                            _ => {}
                         }
                     }
-                }
-                AppMode::AddingValue => {
-                    if let Event::Key(key) = event::read()? {
-                        match key.code {
-                            KeyCode::Enter => app.submit_value(),
-                            KeyCode::Esc => app.back_to_key(),
-                            _ => { app.value_input.handle_event(&Event::Key(key)); }
+                    AppMode::AddingValue => {
+                        if let Some(item) = &app.current_add_item {
+                            match item.key_type {
+                                KeyType::String | KeyType::StringList => {
+                                    match key.code {
+                                        KeyCode::Enter => app.submit_value(),
+                                        KeyCode::Esc => app.cancel_adding(), // Go back to nav
+                                        _ => { app.value_input.handle_event(&Event::Key(key)); }
+                                    }
+                                }
+                                KeyType::Bool => {
+                                    match key.code {
+                                        KeyCode::Enter => app.submit_value(),
+                                        KeyCode::Esc => app.cancel_adding(), // Go back to nav
+                                        KeyCode::Char(' ') | KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
+                                            app.toggle_bool_value();
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
                         }
                     }
-                }
-                // --- NEW: Handle the notification timer ---
-                AppMode::Saved => {
-                    if app.status_timer > 0 {
-                        app.status_timer -= 1;
-                    } else {
-                        app.mode = AppMode::Navigating;
-                    }
-                    // Also check for user input to speed up closing the popup
-                    if let Event::Key(_) = event::read()? {
-                         app.mode = AppMode::Navigating;
-                         app.status_timer = 0;
-                    }
+                    AppMode::Saved => {} // Already handled
                 }
             }
         }
@@ -448,12 +520,19 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         .title(" Distromanifesto Editor ");
     f.render_widget(title_block, chunks[0]);
 
-    let footer_text = match app.mode {
+    let footer_text = match &app.mode {
         AppMode::Navigating => " (q) Quit | (s) Save | (↑/↓) Nav | (a) Add | (d) Delete | (Enter) Edit ",
         AppMode::Editing => " (Enter) Accept | (Esc) Cancel ",
         AppMode::ConfirmDelete => " Delete selected item? (y/n) ",
-        AppMode::AddingKey => " Enter Key: (Enter) Next | (Esc) Cancel ",
-        AppMode::AddingValue => " Enter Value: (Enter) Accept | (Esc) Edit Key ",
+        AppMode::AddingKey(_) => " (↑/↓) Select Key | (Enter) Next | (Esc) Cancel ",
+        AppMode::AddingValue => {
+            if let Some(item) = &app.current_add_item {
+                match item.key_type {
+                    KeyType::Bool => " (Space) Toggle | (Enter) Accept | (Esc) Cancel ",
+                    _ => " (Enter) Accept | (Esc) Cancel ",
+                }
+            } else { "" }
+        },
         AppMode::Saved => " File saved successfully! (Press any key) ",
     };
     let footer_block = Block::default()
@@ -469,11 +548,12 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     f.render_stateful_widget(list, chunks[1], &mut app.state);
 
     // Render popups on top
-    match app.mode {
+    match &mut app.mode {
         AppMode::Editing => draw_editing_popup(f, app),
         AppMode::ConfirmDelete => draw_delete_popup(f),
-        AppMode::AddingKey | AppMode::AddingValue => draw_add_popup(f, app),
-        AppMode::Saved => draw_status_popup(f, "File Saved!"), // --- NEW ---
+        AppMode::AddingKey(list_state) => draw_add_key_popup(f, list_state), // NEW
+        AppMode::AddingValue => draw_add_value_popup(f, app), // NEW
+        AppMode::Saved => draw_status_popup(f, "File Saved!"), // NEW
         AppMode::Navigating => {}
     }
 }
@@ -483,9 +563,17 @@ fn draw_editing_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let area = centered_rect(60, 20, f.size());
     f.render_widget(Clear, area);
 
-    let (section, key) = app.editing_key.as_ref().unwrap();
-    let title = format!(" Edit Value for [{section}] -> {key} ");
-
+    // Try to get key from selected item
+    let title = if let Some(index) = app.state.selected() {
+        if let DisplayItem::Property(_, key, _) = &app.items[index] {
+             format!(" Edit Value for: {key} ")
+        } else {
+            " Edit Value ".to_string()
+        }
+    } else {
+        " Edit Value ".to_string()
+    };
+    
     let width = area.width.max(3) - 3;
     let scroll = app.value_input.visual_scroll(width as usize);
     
@@ -521,67 +609,60 @@ fn draw_delete_popup<B: Backend>(f: &mut Frame<B>) {
     f.render_widget(text, area);
 }
 
-/// Helper function to draw the 'Add Property' popup
-fn draw_add_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
-    // --- FIX: Increased y-percentage from 25 to 30 ---
-    let area = centered_rect(60, 30, f.size());
+// --- NEW: Popup for selecting a key from the schema ---
+fn draw_add_key_popup<B: Backend>(f: &mut Frame<B>, list_state: &mut ListState) {
+    let area = centered_rect(50, 80, f.size());
     f.render_widget(Clear, area);
 
-    let title = format!(" Add Property to [{}] ", app.current_section);
+    let items: Vec<ListItem> = SCHEMA
+        .iter()
+        .map(|item| ListItem::new(item.key))
+        .collect();
 
-    let block = Block::default().borders(Borders::ALL).title(title);
-    f.render_widget(block, area);
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title("Select a Key to Add"))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol(">> ");
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(2)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(3),
-        ])
-        .split(area);
+    f.render_stateful_widget(list, area, list_state);
+}
+
+// --- NEW: Popup for entering the value (context-aware) ---
+fn draw_add_value_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
+    let area = centered_rect(60, 25, f.size());
+    f.render_widget(Clear, area);
+
+    let item = app.current_add_item.as_ref().unwrap();
+    let title = format!(" Enter Value for: {} ", item.key);
     
-    let key_width = chunks[0].width.max(3) - 3;
-    let key_scroll = app.key_input.visual_scroll(key_width as usize);
-    let key_input = Paragraph::new(app.key_input.value())
-        .style(match app.mode {
-            AppMode::AddingKey => Style::default().fg(Color::Yellow),
-            _ => Style::default(),
-        })
-        .scroll((0, key_scroll as u16))
-        .block(Block::default().borders(Borders::ALL).title("Key"));
-    
-    let value_width = chunks[1].width.max(3) - 3;
-    let value_scroll = app.value_input.visual_scroll(value_width as usize);
-    let value_input = Paragraph::new(app.value_input.value())
-        .style(match app.mode {
-            AppMode::AddingValue => Style::default().fg(Color::Yellow),
-            _ => Style::default(),
-        })
-        .scroll((0, value_scroll as u16))
-        .block(Block::default().borders(Borders::ALL).title("Value"));
+    match item.key_type {
+        KeyType::String | KeyType::StringList => {
+            let width = area.width.max(3) - 3;
+            let scroll = app.value_input.visual_scroll(width as usize);
+            
+            let input = Paragraph::new(app.value_input.value())
+                .style(Style::default().fg(Color::Yellow))
+                .scroll((0, scroll as u16))
+                .block(Block::default().borders(Borders::ALL).title(title));
+            
+            f.render_widget(input, area);
 
-    f.render_widget(key_input, chunks[0]);
-    f.render_widget(value_input, chunks[1]);
-
-    match app.mode {
-        AppMode::AddingKey => {
             f.set_cursor(
-                chunks[0].x + 1 + (app.key_input.visual_cursor().max(key_scroll) - key_scroll) as u16,
-                chunks[0].y + 1,
+                area.x + 1 + (app.value_input.visual_cursor().max(scroll) - scroll) as u16,
+                area.y + 1,
             )
         }
-        AppMode::AddingValue => {
-            f.set_cursor(
-                chunks[1].x + 1 + (app.value_input.visual_cursor().max(value_scroll) - value_scroll) as u16,
-                chunks[1].y + 1,
-            )
+        KeyType::Bool => {
+            let text = if app.current_bool_value { "true" } else { "false" };
+            let paragraph = Paragraph::new(text)
+                .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::REVERSED))
+                .alignment(Alignment::Center)
+                .block(Block::default().borders(Borders::ALL).title(title));
+            f.render_widget(paragraph, area);
         }
-        _ => {}
     }
 }
 
-// --- NEW: Helper function to draw the save notification ---
 /// Helper function to draw a simple status popup
 fn draw_status_popup<B: Backend>(f: &mut Frame<B>, message: &str) {
     let area = centered_rect(20, 20, f.size());
