@@ -8,11 +8,15 @@ authors = ["Alex Hernandez ahern077@gmail.com"]
 repository = "https://github.com/dorbro555/distromanifesto"
 
 [dependencies]
-anyhow = "1"              # For ergonomic error handling
+anyhow = "1.0.75"
 dirs = "5"                # To find user directories
-serde = { version = "1", features = ["derive"] }
-toml = "0.8"              # Config or manifest serialization
-crossterm = "0.27"        # Terminal input/output
-ratatui = "0.26"          # For the TUI wizard interface
-clap = { version = "4.0", features = ["derive"] }
-inquire = "0.7.5"
+clap = { version = "4.4.6", features = ["derive"] }
+inquire = "0.6.2"
+serde = { version = "1.0.188", features = ["derive"] }
+serde_ini = "0.2.0" # This one was already here for verify
+shellexpand = "3.1.0"
+
+# Dependencies for the 'modify' TUI
+crossterm = "0.27.0"
+rust-ini = "0.21.3"
+ratatui = { version = "0.23.0", features = ["crossterm"] }

@@ -5,6 +5,7 @@ use anyhow::Result;
 mod setup;
 mod wizard;
 mod verify;
+mod modify;
 
 #[derive(Parser)]
 #[command(name = "distromanifesto")]
@@ -26,6 +27,12 @@ enum Commands {
         #[arg(value_name = "FILE")]
         file: PathBuf,
     },
+    /// Modify an existing manifest file in an interactive TUI
+    Modify {
+        /// The path to the manifest file to modify
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -44,6 +51,9 @@ fn main() -> Result<()> {
                 Ok(_) => println!("✅ Manifest at '{}' is valid.", file.display()),
                 Err(e) => eprintln!("❌ Manifest validation failed: {}", e),
             }
+        }
+        Some(Commands::Modify { file }) => {
+            modify::launch_editor(&file)?;
         }
         None => {
             // Default to the wizard if no subcommand is provided
