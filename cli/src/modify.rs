@@ -174,9 +174,28 @@ impl<'a> App<'a> {
         }
     }
 
-    /// Saves the current in-memory `conf` back to the file.
-    fn save_to_file(&self) -> Result<()> {
-        self.conf.write_to_file(&self.file_path)?;
+/// Saves the current in-memory `conf` back to the file.
+    fn save_to_file(&mut self) -> Result<()> {
+        // 1. Create a brand new, empty Ini object
+        let mut new_conf = Ini::new();
+
+        // 2. Iterate over *our* display list, which has the correct order
+        for item in &self.items {
+            // 3. We only care about properties (sections are implied)
+            if let DisplayItem::Property(section, key, value) = item {
+                let section_name = if section == "Global" { None } else { Some(section.as_str()) };
+                
+                // 4. Add the items to the new Ini object in the correct order
+                new_conf.with_section(section_name).set(key, value);
+            }
+        }
+
+        // 5. Save the new, correctly-ordered object
+        new_conf.write_to_file(&self.file_path)?;
+
+        // 6. Replace our app's internal 'conf' with this new one
+        //    to prevent re-jumbling on the next save.
+        self.conf = new_conf;
         Ok(())
     }
 }
