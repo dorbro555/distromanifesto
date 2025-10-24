@@ -1,6 +1,6 @@
 use anyhow::Result;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode}, // Removed KeyEvent
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -8,22 +8,20 @@ use ini::Ini;
 use ratatui::{
     backend::Backend,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect}, // Removed Alignment
+    layout::{Constraint, Direction, Layout, Rect},
     terminal::{Frame, Terminal},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     prelude::*,
 };
 use std::{io, path::{Path, PathBuf}, time::Duration};
-use tui_input::Input; // Removed InputRequest
-
-// --- THIS IS THE FIX for E0599 ---
+use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
-// ---------------------------------
 
 /// Enum to track the application's current mode.
 enum AppMode {
     Navigating,
     Editing,
+    ConfirmDelete, // --- NEW: Add a state for delete confirmation ---
 }
 
 /// Enum to represent a displayable line in our list.
@@ -132,7 +130,7 @@ impl<'a> App<'a> {
                     self.editing_key = Some((section.clone(), key.clone()));
                     self.input = Input::new(value.clone());
                 }
-                DisplayItem::Section(_) => {}
+                DisplayItem::Section(_) => {} // Can't edit sections
             }
         }
     }
@@ -144,21 +142,18 @@ impl<'a> App<'a> {
         self.input = Input::default();
     }
 
-/// Submits the current edit, saving it to the `conf`.
+    /// Submits the current edit, saving it to the `conf`.
     fn submit_editing(&mut self) {
-        // We need 'if let Some' to get all the data we need
         if let (Some((section, key)), Some(index)) = 
             (self.editing_key.clone(), self.state.selected()) {
             
             let new_value = self.input.value().to_string();
             
-            // 1. Update the in-memory `conf`
             let section_name = if section == "Global" { None } else { Some(section.as_str()) };
             self.conf
                 .with_section(section_name)
                 .set(&key, &new_value);
             
-            // 2. Update our display lists directly to preserve order
             self.items[index] = DisplayItem::Property(
                 section.clone(),
                 key.clone(),
@@ -166,37 +161,70 @@ impl<'a> App<'a> {
             );
             self.list_items[index] = ListItem::new(format!("  {key} = {new_value}"));
 
-            // 3. Exit editing mode
             self.cancel_editing();
-            
-            // 4. Re-select the item we just edited
             self.state.select(Some(index));
         }
     }
 
-/// Saves the current in-memory `conf` back to the file.
+    /// Saves the current in-memory `conf` back to the file.
     fn save_to_file(&mut self) -> Result<()> {
-        // 1. Create a brand new, empty Ini object
         let mut new_conf = Ini::new();
-
-        // 2. Iterate over *our* display list, which has the correct order
         for item in &self.items {
-            // 3. We only care about properties (sections are implied)
             if let DisplayItem::Property(section, key, value) = item {
                 let section_name = if section == "Global" { None } else { Some(section.as_str()) };
-                
-                // 4. Add the items to the new Ini object in the correct order
                 new_conf.with_section(section_name).set(key, value);
             }
         }
-
-        // 5. Save the new, correctly-ordered object
         new_conf.write_to_file(&self.file_path)?;
-
-        // 6. Replace our app's internal 'conf' with this new one
-        //    to prevent re-jumbling on the next save.
         self.conf = new_conf;
         Ok(())
+    }
+
+    // --- NEW: Function to delete the selected item ---
+    /// Deletes the currently selected item.
+    fn delete_selected(&mut self) {
+        if let Some(index) = self.state.selected() {
+            match &self.items[index] {
+                DisplayItem::Property(section, key, _) => {
+                    // 1. Remove from conf
+                    let section_name = if section == "Global" { None } else { Some(section.as_str()) };
+                    self.conf.delete_from(section_name, key);
+
+                    // 2. Remove from display lists
+                    self.items.remove(index);
+                    self.list_items.remove(index);
+
+                    // 3. Fix selection (select previous item, or 0 if it was the first)
+                    let new_index = if index > 0 { index - 1 } else { 0 };
+                    if self.list_items.is_empty() {
+                        self.state.select(None);
+                    } else {
+                        self.state.select(Some(new_index));
+                    }
+                }
+                DisplayItem::Section(_) => {
+                    // TODO: Implement section deletion?
+                    // For now, we only delete properties.
+                }
+            }
+        }
+        self.mode = AppMode::Navigating; // Go back to navigating
+    }
+
+    // --- NEW: Function to enter the delete confirmation mode ---
+    /// Enters delete confirmation mode if a property is selected.
+    fn start_confirm_delete(&mut self) {
+        if let Some(index) = self.state.selected() {
+            if let DisplayItem::Property(..) = &self.items[index] {
+                self.mode = AppMode::ConfirmDelete;
+            }
+        }
+    }
+
+    // --- NEW: Function to cancel the delete confirmation ---
+    /// Exits delete confirmation mode.
+    fn cancel_delete(&mut self) {
+        self.mode = AppMode::Navigating;
     }
 }
 
@@ -245,6 +273,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                             KeyCode::Down | KeyCode::Char('j') => app.next(),
                             KeyCode::Up | KeyCode::Char('k')=> app.previous(),
                             KeyCode::Enter => app.start_editing(),
+                            KeyCode::Char('d') => app.start_confirm_delete(), // --- NEW ---
                             _ => {}
                         }
                     }
@@ -255,9 +284,18 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                             KeyCode::Enter => app.submit_editing(),
                             KeyCode::Esc => app.cancel_editing(),
                             _ => {
-                                // This line is now correct
                                 app.input.handle_event(&Event::Key(key));
                             }
+                        }
+                    }
+                }
+                // --- NEW: Handle key input in the delete confirmation mode ---
+                AppMode::ConfirmDelete => {
+                    if let Event::Key(key) = event::read()? {
+                        match key.code {
+                            KeyCode::Char('y') | KeyCode::Char('Y') => app.delete_selected(),
+                            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => app.cancel_delete(),
+                            _ => {}
                         }
                     }
                 }
@@ -284,9 +322,11 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         .title(" Distromanifesto Editor ");
     f.render_widget(title_block, chunks[0]);
 
+    // --- NEW: Update footer text based on mode ---
     let footer_text = match app.mode {
-        AppMode::Navigating => " (q) Quit | (s) Save | (↑/↓) Navigate | (Enter) Edit ",
+        AppMode::Navigating => " (q) Quit | (s) Save | (↑/↓) Nav | (Enter) Edit | (d) Delete ",
         AppMode::Editing => " (Enter) Accept | (Esc) Cancel ",
+        AppMode::ConfirmDelete => " Delete selected item? (y/n) ",
     };
     let footer_block = Block::default()
         .borders(Borders::ALL)
@@ -300,8 +340,12 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
 
     f.render_stateful_widget(list, chunks[1], &mut app.state);
 
+    // Render popups on top of everything else
     if let AppMode::Editing = app.mode {
         draw_editing_popup(f, app);
+    } else if let AppMode::ConfirmDelete = app.mode {
+        // --- NEW: Draw the delete confirmation popup ---
+        draw_delete_popup(f);
     }
 }
 
@@ -328,6 +372,27 @@ fn draw_editing_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         area.y + 1,
     )
 }
+
+// --- NEW: Helper function to draw the delete confirmation popup ---
+/// Helper function to draw the delete confirmation popup
+fn draw_delete_popup<B: Backend>(f: &mut Frame<B>) {
+    let area = centered_rect(40, 20, f.size());
+    f.render_widget(Clear, area); // Clear the area
+
+    let text = Paragraph::new("Are you sure you want to delete this item?\n\n(y/n)")
+        .style(Style::default().fg(Color::Red))
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Confirm Delete ")
+                .title_style(Style::default().fg(Color::Red))
+                .border_style(Style::default().fg(Color::Red))
+        );
+    
+    f.render_widget(text, area);
+}
+
 
 /// Helper function to create a centered rectangle for the popup.
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
