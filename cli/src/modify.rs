@@ -1,11 +1,10 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-// We MUST alias our ini crate to avoid conflicts
-use distro_ini::Ini;
+use distro_ini::Ini; // Use our aliased crate
 use ratatui::{
     backend::Backend,
     backend::CrosstermBackend,
@@ -14,16 +13,23 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     prelude::*,
 };
-use std::{collections::HashMap, fs, io, path::{Path, PathBuf}, time::Duration};
+use std::{
+    collections::HashMap,
+    fs, io,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
 // --- Schema Definition ---
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum KeyType {
     String,
     StringList,
     Bool,
+    HomeDir,
 }
 
 #[derive(Clone)]
@@ -32,11 +38,10 @@ struct SchemaItem {
     key_type: KeyType,
 }
 
-// All valid keys based on user-provided list
 const SCHEMA: &[SchemaItem] = &[
     SchemaItem { key: "image", key_type: KeyType::String },
     SchemaItem { key: "clone", key_type: KeyType::String },
-    SchemaItem { key: "home", key_type: KeyType::String },
+    SchemaItem { key: "home", key_type: KeyType::HomeDir },
     SchemaItem { key: "exported_bins_path", key_type: KeyType::String },
     SchemaItem { key: "additional_flags", key_type: KeyType::StringList },
     SchemaItem { key: "additional_packages", key_type: KeyType::StringList },
@@ -58,7 +63,9 @@ const SCHEMA: &[SchemaItem] = &[
     SchemaItem { key: "unshare_all", key_type: KeyType::Bool },
 ];
 
-// --- NEW: Helper to look up schema items ---
+// --- NEW: Constant for the custom path option ---
+const CUSTOM_HOME_PATH_OPTION: &str = "[ Type Custom Path ]";
+
 struct Schema {
     map: HashMap<&'static str, KeyType>,
 }
@@ -68,15 +75,18 @@ impl Schema {
         Self { map }
     }
     fn get_type(&self, key: &str) -> KeyType {
-        self.map.get(key).cloned().unwrap_or(KeyType::String) // Default to String if not in schema
+        self.map.get(key).cloned().unwrap_or(KeyType::String)
     }
 }
 
 // --- App State ---
+
 enum AppMode {
     Navigating,
-    EditingString, // Renamed from Editing
-    EditingBool,   // --- NEW: State for editing a boolean ---
+    EditingString,
+    EditingBool,
+    EditingHome(ListState),
+    EditingHomeCustom, // --- NEW: State for custom home path input ---
     ConfirmDelete,
     AddingKey(ListState),
     AddingValue,
@@ -100,7 +110,8 @@ struct App<'a> {
     current_add_item: Option<SchemaItem>,
     current_bool_value: bool,
     status_timer: u8,
-    schema: Schema, // --- NEW: Add schema to app state ---
+    schema: Schema,
+    home_dir_options: Vec<String>,
 }
 
 impl<'a> App<'a> {
@@ -121,7 +132,8 @@ impl<'a> App<'a> {
             current_add_item: None,
             current_bool_value: true,
             status_timer: 0,
-            schema: Schema::new(), // --- NEW ---
+            schema: Schema::new(),
+            home_dir_options: Vec::new(),
         };
         app.parse_conf_to_items(conf);
         app
@@ -191,18 +203,26 @@ impl<'a> App<'a> {
         self.state.select(Some(i));
     }
 
-    // --- REFACTORED: This is now the "smart" edit starter ---
     fn start_editing(&mut self) {
         if let Some(index) = self.state.selected() {
             if let DisplayItem::Property(_, key, value) = &self.items[index] {
-                // Check the schema
-                match self.schema.get_type(key) {
+                let value_clone = value.to_string();
+                let key_clone = key.to_string();
+
+                match self.schema.get_type(&key_clone) {
                     KeyType::Bool => {
-                        self.current_bool_value = value.parse().unwrap_or(true);
+                        self.current_bool_value = value_clone.parse().unwrap_or(true);
                         self.mode = AppMode::EditingBool;
                     }
+                    KeyType::HomeDir => {
+                        self.load_home_dir_options();
+                        let mut list_state = ListState::default();
+                        let current_idx = self.home_dir_options.iter().position(|h| *h == value_clone);
+                        list_state.select(current_idx.or(Some(0)));
+                        self.mode = AppMode::EditingHome(list_state);
+                    }
                     KeyType::String | KeyType::StringList => {
-                        self.value_input = Input::new(value.clone());
+                        self.value_input = Input::new(value_clone);
                         self.mode = AppMode::EditingString;
                     }
                 }
@@ -213,12 +233,13 @@ impl<'a> App<'a> {
     fn cancel_editing(&mut self) {
         self.mode = AppMode::Navigating;
         self.value_input = Input::default();
+        self.home_dir_options.clear();
     }
 
-    fn submit_string_editing(&mut self) {
+    // --- NEW: Helper function to apply the edit ---
+    fn set_edited_value(&mut self, new_value: String) {
         if let Some(index) = self.state.selected() {
             if let DisplayItem::Property(section, key, _) = &self.items[index].clone() {
-                let new_value = self.value_input.value().to_string();
                 
                 self.items[index] = DisplayItem::Property(
                     section.clone(),
@@ -233,22 +254,40 @@ impl<'a> App<'a> {
         }
     }
 
-    // --- NEW: Logic to submit a boolean edit ---
-    fn submit_bool_editing(&mut self) {
-        if let Some(index) = self.state.selected() {
-            if let DisplayItem::Property(section, key, _) = &self.items[index].clone() {
-                let new_value = self.current_bool_value.to_string();
-                
-                self.items[index] = DisplayItem::Property(
-                    section.clone(),
-                    key.clone(),
-                    new_value.clone()
-                );
-                self.list_items[index] = ListItem::new(format!("  {key} = {new_value}"));
+    fn submit_string_editing(&mut self) {
+        let new_value = self.value_input.value().to_string();
+        self.set_edited_value(new_value);
+    }
 
-                self.cancel_editing();
-                self.state.select(Some(index));
+    fn submit_bool_editing(&mut self) {
+        let new_value = self.current_bool_value.to_string();
+        self.set_edited_value(new_value);
+    }
+
+    fn submit_home_editing(&mut self) {
+        if let AppMode::EditingHome(list_state) = &self.mode {
+             if let Some(selected_home_index) = list_state.selected() {
+                let selected_option = self.home_dir_options[selected_home_index].clone();
+                
+                if selected_option == CUSTOM_HOME_PATH_OPTION {
+                    // --- NEW: Transition to custom input mode ---
+                    self.value_input = Input::default();
+                    self.mode = AppMode::EditingHomeCustom;
+                } else {
+                    // --- This is now fixed to use the full path ---
+                    self.set_edited_value(selected_option);
+                }
             }
+        }
+    }
+
+    // --- NEW: Submit logic for the custom home path input ---
+    fn submit_home_custom_editing(&mut self) {
+        let new_value = self.value_input.value().to_string();
+        if !new_value.is_empty() {
+            self.set_edited_value(new_value);
+        } else {
+            self.cancel_editing();
         }
     }
 
@@ -342,6 +381,11 @@ impl<'a> App<'a> {
                     KeyType::String | KeyType::StringList => {
                         self.value_input = Input::default();
                     }
+                    KeyType::HomeDir => {
+                        // When *adding*, we'll just use a text box for simplicity
+                        // The smart editor is for *editing*
+                        self.value_input = Input::default(); 
+                    }
                     KeyType::Bool => {
                         self.current_bool_value = true;
                     }
@@ -355,7 +399,7 @@ impl<'a> App<'a> {
         if let Some(item) = &self.current_add_item {
             let new_key = item.key.to_string();
             let new_value = match item.key_type {
-                KeyType::String | KeyType::StringList => self.value_input.value().to_string(),
+                KeyType::String | KeyType::StringList | KeyType::HomeDir => self.value_input.value().to_string(),
                 KeyType::Bool => self.current_bool_value.to_string(),
             };
 
@@ -379,10 +423,40 @@ impl<'a> App<'a> {
         self.mode = AppMode::Navigating;
         self.current_add_item = None;
         self.value_input = Input::default();
+        self.home_dir_options.clear();
     }
 
     fn toggle_bool_value(&mut self) {
         self.current_bool_value = !self.current_bool_value;
+    }
+
+    // --- MODIFIED: This function now saves full paths and adds the custom option ---
+    fn load_home_dir_options(&mut self) {
+        let mut options = vec![
+            "host".to_string(),
+            "none".to_string(),
+        ];
+        
+        if let Ok(homes_path) = dirs::home_dir()
+            .ok_or_else(|| anyhow!("Could not find home directory"))
+            .map(|mut p| { p.push(".distromanifesto/homes"); p })
+        {
+            if let Ok(entries) = fs::read_dir(homes_path) {
+                for entry in entries.flatten() {
+                    if entry.path().is_dir() {
+                        if let Some(dir_name) = entry.path().file_name() {
+                            // --- FIX: Save the full tilde-expanded path ---
+                            let path_str = format!("~/.distromanifesto/homes/{}", dir_name.to_string_lossy());
+                            options.push(path_str);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // --- NEW: Add the custom option ---
+        options.push(CUSTOM_HOME_PATH_OPTION.to_string());
+        self.home_dir_options = options;
     }
 }
 
@@ -395,7 +469,7 @@ pub fn launch_editor(file_path: &Path) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
+    let backend = CrosstermBackend::new(stdout); // <-- Corrected: use `stdout`
     let mut terminal = Terminal::new(backend)?;
 
     let res = run_app(&mut terminal, &mut app);
@@ -426,9 +500,11 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                 } else {
                     app.mode = AppMode::Navigating;
                 }
-                if let Event::Key(_) = event::read()? {
-                    app.mode = AppMode::Navigating;
-                    app.status_timer = 0;
+                if let Ok(true) = event::poll(Duration::from_millis(0)) {
+                   if let Event::Key(_) = event::read()? {
+                        app.mode = AppMode::Navigating;
+                        app.status_timer = 0;
+                   }
                 }
                 continue;
             }
@@ -454,7 +530,6 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                             _ => { app.value_input.handle_event(&Event::Key(key)); }
                         }
                     }
-                    // --- NEW: Key handling for EditingBool ---
                     AppMode::EditingBool => {
                          match key.code {
                             KeyCode::Enter => app.submit_bool_editing(),
@@ -463,6 +538,31 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                                 app.toggle_bool_value();
                             }
                             _ => {}
+                        }
+                    }
+                    AppMode::EditingHome(ref mut list_state) => {
+                        match key.code {
+                            KeyCode::Enter => app.submit_home_editing(),
+                            KeyCode::Esc => app.cancel_editing(),
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                let i = list_state.selected().unwrap_or(0);
+                                let next = if i >= app.home_dir_options.len() - 1 { 0 } else { i + 1 };
+                                list_state.select(Some(next));
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                let i = list_state.selected().unwrap_or(0);
+                                let prev = if i == 0 { app.home_dir_options.len() - 1 } else { i - 1 };
+                                list_state.select(Some(prev));
+                            }
+                            _ => {}
+                        }
+                    }
+                    // --- NEW: Key handling for custom home input ---
+                    AppMode::EditingHomeCustom => {
+                         match key.code {
+                            KeyCode::Enter => app.submit_home_custom_editing(),
+                            KeyCode::Esc => app.cancel_editing(),
+                            _ => { app.value_input.handle_event(&Event::Key(key)); }
                         }
                     }
                     AppMode::ConfirmDelete => {
@@ -492,7 +592,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                     AppMode::AddingValue => {
                         if let Some(item) = &app.current_add_item {
                             match item.key_type {
-                                KeyType::String | KeyType::StringList => {
+                                KeyType::String | KeyType::StringList | KeyType::HomeDir => {
                                     match key.code {
                                         KeyCode::Enter => app.submit_value(),
                                         KeyCode::Esc => app.cancel_adding(),
@@ -512,7 +612,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                             }
                         }
                     }
-                    AppMode::Saved => {} // Handled at top of loop
+                    AppMode::Saved => {}
                 }
             }
         }
@@ -538,17 +638,18 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         .title(" Distromanifesto Editor ");
     f.render_widget(title_block, chunks[0]);
 
-    // --- REFACTORED: Footer is now style-aware ---
     let (footer_text, footer_style) = match &app.mode {
         AppMode::Navigating => (" (q) Quit | (s) Save | (↑/↓) Nav | (a) Add | (d) Delete | (Enter) Edit ".to_string(), Style::default()),
         AppMode::EditingString => (" (Enter) Accept | (Esc) Cancel ".to_string(), Style::default()),
-        AppMode::EditingBool => (" (Space) Toggle | (Enter) Accept | (Esc) Cancel ".to_string(), Style::default()),
+        AppMode::EditingBool => (" (Space/←/→) Toggle | (Enter) Accept | (Esc) Cancel ".to_string(), Style::default()),
+        AppMode::EditingHome(_) => (" (↑/↓) Select Home | (Enter) Accept | (Esc) Cancel ".to_string(), Style::default()),
+        AppMode::EditingHomeCustom => (" (Enter) Accept Custom Path | (Esc) Cancel ".to_string(), Style::default()),
         AppMode::ConfirmDelete => (" Delete selected item? (y/n) ".to_string(), Style::default().fg(Color::Red)),
         AppMode::AddingKey(_) => (" (↑/↓) Select Key | (Enter) Next | (Esc) Cancel ".to_string(), Style::default()),
         AppMode::AddingValue => {
             let text = if let Some(item) = &app.current_add_item {
                 match item.key_type {
-                    KeyType::Bool => " (Space) Toggle | (Enter) Accept | (Esc) Cancel ",
+                    KeyType::Bool => " (Space/←/→) Toggle | (Enter) Accept | (Esc) Cancel ",
                     _ => " (Enter) Accept | (Esc) Cancel ",
                 }
             } else { "" };
@@ -571,18 +672,20 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
 
     f.render_stateful_widget(list, chunks[1], &mut app.state);
 
-    // Render popups on top
     match &mut app.mode {
         AppMode::EditingString => draw_edit_string_popup(f, app),
-        AppMode::EditingBool => draw_edit_bool_popup(f, app), // --- NEW ---
+        AppMode::EditingBool => draw_edit_bool_popup(f, app),
+        AppMode::EditingHome(list_state) => {
+            draw_edit_home_popup(f, &app.home_dir_options, list_state)
+        }
+        AppMode::EditingHomeCustom => draw_edit_home_custom_popup(f, app), // --- NEW ---
         AppMode::ConfirmDelete => draw_delete_popup(f),
         AppMode::AddingKey(list_state) => draw_add_key_popup(f, list_state),
         AppMode::AddingValue => draw_add_value_popup(f, app),
-        AppMode::Navigating | AppMode::Saved => {} // --- MODIFIED: No popup for Nav or Saved ---
+        AppMode::Navigating | AppMode::Saved => {}
     }
 }
 
-// --- Renamed from draw_editing_popup ---
 fn draw_edit_string_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let area = centered_rect(60, 20, f.size());
     f.render_widget(Clear, area);
@@ -609,24 +712,95 @@ fn draw_edit_string_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     )
 }
 
-// --- NEW: Popup for editing a boolean ---
-fn draw_edit_bool_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
-    let area = centered_rect(60, 20, f.size());
+fn draw_bool_toggle<B: Backend>(f: &mut Frame<B>, area: Rect, title: String, value: bool) {
+    let block = Block::default().borders(Borders::ALL).title(title);
     f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    
+    let layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .margin(1)
+        .split(area);
 
+    let true_style = if value {
+        Style::default().fg(Color::Green).add_modifier(Modifier::REVERSED)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let false_style = if !value {
+        Style::default().fg(Color::Red).add_modifier(Modifier::REVERSED)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let true_text = Paragraph::new(" true ").style(true_style).alignment(Alignment::Center);
+    let false_text = Paragraph::new(" false ").style(false_style).alignment(Alignment::Center);
+    
+    f.render_widget(true_text, layout[0]);
+    f.render_widget(false_text, layout[1]);
+}
+
+fn draw_edit_bool_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
+    let area = centered_rect(40, 20, f.size());
     let title = if let Some(index) = app.state.selected() {
         if let DisplayItem::Property(_, key, _) = &app.items[index] {
              format!(" Edit Value for: {key} ")
         } else { " Edit Value ".to_string() }
     } else { " Edit Value ".to_string() };
     
-    let text = if app.current_bool_value { "true" } else { "false" };
-    let paragraph = Paragraph::new(text)
+    draw_bool_toggle(f, area, title, app.current_bool_value);
+}
+
+fn draw_edit_home_popup<B: Backend>(
+    f: &mut Frame<B>,
+    home_dir_options: &Vec<String>,
+    list_state: &mut ListState,
+) {
+    let area = centered_rect(50, 80, f.size());
+    f.render_widget(Clear, area);
+
+    let items: Vec<ListItem> = home_dir_options
+        .iter()
+        .map(|opt| {
+            // --- NEW: Style the custom option ---
+            if opt == CUSTOM_HOME_PATH_OPTION {
+                ListItem::new(opt.as_str()).style(Style::default().fg(Color::Yellow))
+            } else {
+                ListItem::new(opt.as_str())
+            }
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title("Select Home Directory"))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol(">> ");
+
+    f.render_stateful_widget(list, area, list_state);
+}
+
+// --- NEW: Popup for custom home path input ---
+fn draw_edit_home_custom_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
+    let area = centered_rect(60, 20, f.size());
+    f.render_widget(Clear, area);
+
+    let title = " Enter Custom Home Path ";
+    
+    let width = area.width.max(3) - 3;
+    let scroll = app.value_input.visual_scroll(width as usize);
+    
+    let input = Paragraph::new(app.value_input.value())
         .style(Style::default().fg(Color::Yellow))
-        .alignment(Alignment::Center)
+        .scroll((0, scroll as u16))
         .block(Block::default().borders(Borders::ALL).title(title));
     
-    f.render_widget(paragraph, area);
+    f.render_widget(input, area);
+
+    f.set_cursor(
+        area.x + 1 + (app.value_input.visual_cursor().max(scroll) - scroll) as u16,
+        area.y + 1,
+    )
 }
 
 
@@ -665,13 +839,11 @@ fn draw_add_key_popup<B: Backend>(f: &mut Frame<B>, list_state: &mut ListState) 
 
 fn draw_add_value_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let area = centered_rect(60, 25, f.size());
-    f.render_widget(Clear, area);
-
     let item = app.current_add_item.as_ref().unwrap();
     let title = format!(" Enter Value for: {} ", item.key);
     
     match item.key_type {
-        KeyType::String | KeyType::StringList => {
+        KeyType::String | KeyType::StringList | KeyType::HomeDir => {
             let width = area.width.max(3) - 3;
             let scroll = app.value_input.visual_scroll(width as usize);
             
@@ -688,18 +860,10 @@ fn draw_add_value_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             )
         }
         KeyType::Bool => {
-            // --- FIX: Removed the .add_modifier(Modifier::REVERSED) ---
-            let text = if app.current_bool_value { "true" } else { "false" };
-            let paragraph = Paragraph::new(text)
-                .style(Style::default().fg(Color::Yellow)) 
-                .alignment(Alignment::Center)
-                .block(Block::default().borders(Borders::ALL).title(title));
-            f.render_widget(paragraph, area);
+            draw_bool_toggle(f, area, title, app.current_bool_value);
         }
     }
 }
-
-// --- REMOVED: `draw_status_popup` is no longer needed ---
 
 /// Helper function to create a centered rectangle for the popup.
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
