@@ -9,9 +9,9 @@ use ratatui::{
     backend::Backend,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
+    prelude::*,
     terminal::{Frame, Terminal},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
-    prelude::*,
 };
 use std::{
     collections::HashMap,
@@ -19,8 +19,8 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
+use tui_input::Input;
 
 // --- Schema Definition ---
 
@@ -39,28 +39,94 @@ struct SchemaItem {
 }
 
 const SCHEMA: &[SchemaItem] = &[
-    SchemaItem { key: "image", key_type: KeyType::String },
-    SchemaItem { key: "clone", key_type: KeyType::String },
-    SchemaItem { key: "home", key_type: KeyType::HomeDir },
-    SchemaItem { key: "exported_bins_path", key_type: KeyType::String },
-    SchemaItem { key: "additional_flags", key_type: KeyType::StringList },
-    SchemaItem { key: "additional_packages", key_type: KeyType::StringList },
-    SchemaItem { key: "init_hooks", key_type: KeyType::StringList },
-    SchemaItem { key: "pre_init_hooks", key_type: KeyType::StringList },
-    SchemaItem { key: "volume", key_type: KeyType::StringList },
-    SchemaItem { key: "exported_apps", key_type: KeyType::StringList },
-    SchemaItem { key: "exported_bins", key_type: KeyType::StringList },
-    SchemaItem { key: "entry", key_type: KeyType::Bool },
-    SchemaItem { key: "start_now", key_type: KeyType::Bool },
-    SchemaItem { key: "init", key_type: KeyType::Bool },
-    SchemaItem { key: "nvidia", key_type: KeyType::Bool },
-    SchemaItem { key: "pull", key_type: KeyType::Bool },
-    SchemaItem { key: "root", key_type: KeyType::Bool },
-    SchemaItem { key: "unshare_ipc", key_type: KeyType::Bool },
-    SchemaItem { key: "unshare_netns", key_type: KeyType::Bool },
-    SchemaItem { key: "unshare_process", key_type: KeyType::Bool },
-    SchemaItem { key: "unshare_devsys", key_type: KeyType::Bool },
-    SchemaItem { key: "unshare_all", key_type: KeyType::Bool },
+    SchemaItem {
+        key: "image",
+        key_type: KeyType::String,
+    },
+    SchemaItem {
+        key: "clone",
+        key_type: KeyType::String,
+    },
+    SchemaItem {
+        key: "home",
+        key_type: KeyType::HomeDir,
+    },
+    SchemaItem {
+        key: "exported_bins_path",
+        key_type: KeyType::String,
+    },
+    SchemaItem {
+        key: "additional_flags",
+        key_type: KeyType::StringList,
+    },
+    SchemaItem {
+        key: "additional_packages",
+        key_type: KeyType::StringList,
+    },
+    SchemaItem {
+        key: "init_hooks",
+        key_type: KeyType::StringList,
+    },
+    SchemaItem {
+        key: "pre_init_hooks",
+        key_type: KeyType::StringList,
+    },
+    SchemaItem {
+        key: "volume",
+        key_type: KeyType::StringList,
+    },
+    SchemaItem {
+        key: "exported_apps",
+        key_type: KeyType::StringList,
+    },
+    SchemaItem {
+        key: "exported_bins",
+        key_type: KeyType::StringList,
+    },
+    SchemaItem {
+        key: "entry",
+        key_type: KeyType::Bool,
+    },
+    SchemaItem {
+        key: "start_now",
+        key_type: KeyType::Bool,
+    },
+    SchemaItem {
+        key: "init",
+        key_type: KeyType::Bool,
+    },
+    SchemaItem {
+        key: "nvidia",
+        key_type: KeyType::Bool,
+    },
+    SchemaItem {
+        key: "pull",
+        key_type: KeyType::Bool,
+    },
+    SchemaItem {
+        key: "root",
+        key_type: KeyType::Bool,
+    },
+    SchemaItem {
+        key: "unshare_ipc",
+        key_type: KeyType::Bool,
+    },
+    SchemaItem {
+        key: "unshare_netns",
+        key_type: KeyType::Bool,
+    },
+    SchemaItem {
+        key: "unshare_process",
+        key_type: KeyType::Bool,
+    },
+    SchemaItem {
+        key: "unshare_devsys",
+        key_type: KeyType::Bool,
+    },
+    SchemaItem {
+        key: "unshare_all",
+        key_type: KeyType::Bool,
+    },
 ];
 
 // --- NEW: Constant for the custom path option ---
@@ -71,7 +137,10 @@ struct Schema {
 }
 impl Schema {
     fn new() -> Self {
-        let map = SCHEMA.iter().map(|item| (item.key, item.key_type)).collect();
+        let map = SCHEMA
+            .iter()
+            .map(|item| (item.key, item.key_type))
+            .collect();
         Self { map }
     }
     fn get_type(&self, key: &str) -> KeyType {
@@ -81,15 +150,20 @@ impl Schema {
 
 // --- App State ---
 
+// Inside the AppMode enum definition
 enum AppMode {
     Navigating,
     EditingString,
     EditingBool,
     EditingHome(ListState),
-    EditingHomeCustom, // --- NEW: State for custom home path input ---
+    EditingHomeCustom,
     ConfirmDelete,
     AddingKey(ListState),
-    AddingValue,
+    // AddingValue, // Remove or rename this
+    AddingStringValue,                // Renamed from AddingValue
+    AddingBoolValue,                  // New state for adding bools
+    AddingHomeValueSelect(ListState), // New state for selecting home on add
+    AddingHomeValueCustom,            // New state for custom home input on add
     Saved,
 }
 
@@ -144,7 +218,7 @@ impl<'a> App<'a> {
         for (sec, prop) in conf.iter() {
             let section_name = sec.unwrap_or("Global").to_string();
             items.push(DisplayItem::Section(section_name.clone()));
-            
+
             for (key, value) in prop.iter() {
                 items.push(DisplayItem::Property(
                     section_name.clone(),
@@ -156,7 +230,7 @@ impl<'a> App<'a> {
         self.items = items;
         self.refresh_list_items_from_items();
     }
-    
+
     fn refresh_list_items_from_items(&mut self) {
         let mut list_items = Vec::new();
         for item in &self.items {
@@ -168,7 +242,7 @@ impl<'a> App<'a> {
                     );
                 }
                 DisplayItem::Property(_, key, value) => {
-                     list_items.push(ListItem::new(format!("  {key} = {value}")));
+                    list_items.push(ListItem::new(format!("  {key} = {value}")));
                 }
             }
         }
@@ -217,7 +291,8 @@ impl<'a> App<'a> {
                     KeyType::HomeDir => {
                         self.load_home_dir_options();
                         let mut list_state = ListState::default();
-                        let current_idx = self.home_dir_options.iter().position(|h| *h == value_clone);
+                        let current_idx =
+                            self.home_dir_options.iter().position(|h| *h == value_clone);
                         list_state.select(current_idx.or(Some(0)));
                         self.mode = AppMode::EditingHome(list_state);
                     }
@@ -240,12 +315,8 @@ impl<'a> App<'a> {
     fn set_edited_value(&mut self, new_value: String) {
         if let Some(index) = self.state.selected() {
             if let DisplayItem::Property(section, key, _) = &self.items[index].clone() {
-                
-                self.items[index] = DisplayItem::Property(
-                    section.clone(),
-                    key.clone(),
-                    new_value.clone()
-                );
+                self.items[index] =
+                    DisplayItem::Property(section.clone(), key.clone(), new_value.clone());
                 self.list_items[index] = ListItem::new(format!("  {key} = {new_value}"));
 
                 self.cancel_editing();
@@ -266,9 +337,9 @@ impl<'a> App<'a> {
 
     fn submit_home_editing(&mut self) {
         if let AppMode::EditingHome(list_state) = &self.mode {
-             if let Some(selected_home_index) = list_state.selected() {
+            if let Some(selected_home_index) = list_state.selected() {
                 let selected_option = self.home_dir_options[selected_home_index].clone();
-                
+
                 if selected_option == CUSTOM_HOME_PATH_OPTION {
                     // --- NEW: Transition to custom input mode ---
                     self.value_input = Input::default();
@@ -363,7 +434,7 @@ impl<'a> App<'a> {
                 }
             }
         } else {
-            self.current_section = "Global".to_string(); 
+            self.current_section = "Global".to_string();
         }
 
         let mut list_state = ListState::default();
@@ -371,47 +442,73 @@ impl<'a> App<'a> {
         self.mode = AppMode::AddingKey(list_state);
     }
 
+    // Inside impl App<'a>
     fn submit_key(&mut self) {
         if let AppMode::AddingKey(list_state) = &mut self.mode {
             if let Some(index) = list_state.selected() {
                 let schema_item = SCHEMA[index].clone();
                 self.current_add_item = Some(schema_item.clone());
-                
+
                 match schema_item.key_type {
                     KeyType::String | KeyType::StringList => {
                         self.value_input = Input::default();
+                        self.mode = AppMode::AddingStringValue; // Use renamed state
                     }
                     KeyType::HomeDir => {
-                        // When *adding*, we'll just use a text box for simplicity
-                        // The smart editor is for *editing*
-                        self.value_input = Input::default(); 
+                        // --- START CHANGE ---
+                        self.load_home_dir_options(); // Load options
+                        let mut home_list_state = ListState::default();
+                        home_list_state.select(Some(0)); // Select first option
+                        self.mode = AppMode::AddingHomeValueSelect(home_list_state);
+                        // Transition to new state
+                        // --- END CHANGE ---
                     }
                     KeyType::Bool => {
-                        self.current_bool_value = true;
+                        self.current_bool_value = true; // Default to true
+                        self.mode = AppMode::AddingBoolValue; // Transition to new bool state
                     }
                 }
-                self.mode = AppMode::AddingValue;
+                // self.mode = AppMode::AddingValue; // Remove this line
             }
         }
     }
 
-    fn submit_value(&mut self) {
+    // Rename submit_value
+    fn submit_string_value(&mut self) {
         if let Some(item) = &self.current_add_item {
             let new_key = item.key.to_string();
-            let new_value = match item.key_type {
-                KeyType::String | KeyType::StringList | KeyType::HomeDir => self.value_input.value().to_string(),
-                KeyType::Bool => self.current_bool_value.to_string(),
-            };
+            // Only handle String, StringList here now
+            let new_value = self.value_input.value().to_string();
 
+            // Insert logic remains the same...
             let index = self.state.selected().unwrap_or(0);
             let insert_index = if self.items.is_empty() { 0 } else { index + 1 };
-            
             let new_display_item = DisplayItem::Property(
                 self.current_section.clone(),
                 new_key.clone(),
-                new_value.clone()
+                new_value.clone(),
             );
-            
+            self.items.insert(insert_index, new_display_item);
+            self.refresh_list_items_from_items();
+            self.state.select(Some(insert_index));
+            self.cancel_adding();
+        }
+    }
+
+    // New function for submitting boolean values
+    fn submit_bool_value(&mut self) {
+        if let Some(item) = &self.current_add_item {
+            let new_key = item.key.to_string();
+            let new_value = self.current_bool_value.to_string();
+
+            // Insert logic remains the same...
+            let index = self.state.selected().unwrap_or(0);
+            let insert_index = if self.items.is_empty() { 0 } else { index + 1 };
+            let new_display_item = DisplayItem::Property(
+                self.current_section.clone(),
+                new_key.clone(),
+                new_value.clone(),
+            );
             self.items.insert(insert_index, new_display_item);
             self.refresh_list_items_from_items();
             self.state.select(Some(insert_index));
@@ -432,31 +529,81 @@ impl<'a> App<'a> {
 
     // --- MODIFIED: This function now saves full paths and adds the custom option ---
     fn load_home_dir_options(&mut self) {
-        let mut options = vec![
-            "host".to_string(),
-            "none".to_string(),
-        ];
-        
+        let mut options = vec!["host".to_string(), "none".to_string()];
+
         if let Ok(homes_path) = dirs::home_dir()
             .ok_or_else(|| anyhow!("Could not find home directory"))
-            .map(|mut p| { p.push(".distromanifesto/homes"); p })
+            .map(|mut p| {
+                p.push(".distromanifesto/homes");
+                p
+            })
         {
             if let Ok(entries) = fs::read_dir(homes_path) {
                 for entry in entries.flatten() {
                     if entry.path().is_dir() {
                         if let Some(dir_name) = entry.path().file_name() {
                             // --- FIX: Save the full tilde-expanded path ---
-                            let path_str = format!("~/.distromanifesto/homes/{}", dir_name.to_string_lossy());
+                            let path_str =
+                                format!("~/.distromanifesto/homes/{}", dir_name.to_string_lossy());
                             options.push(path_str);
                         }
                     }
                 }
             }
         }
-        
+
         // --- NEW: Add the custom option ---
         options.push(CUSTOM_HOME_PATH_OPTION.to_string());
         self.home_dir_options = options;
+    }
+    // Inside impl App<'a>
+
+    // Helper to insert the new item
+    fn insert_new_property(&mut self, key: String, value: String) {
+        let index = self.state.selected().unwrap_or(0);
+        let insert_index = if self.items.is_empty() { 0 } else { index + 1 };
+
+        let new_display_item =
+            DisplayItem::Property(self.current_section.clone(), key.clone(), value.clone());
+
+        self.items.insert(insert_index, new_display_item);
+        self.refresh_list_items_from_items();
+        self.state.select(Some(insert_index));
+        self.cancel_adding();
+    }
+
+    fn submit_home_add_select(&mut self) {
+        if let AppMode::AddingHomeValueSelect(list_state) = &self.mode {
+            if let Some(selected_home_index) = list_state.selected() {
+                let selected_option = self.home_dir_options[selected_home_index].clone();
+
+                if selected_option == CUSTOM_HOME_PATH_OPTION {
+                    // Transition to custom input mode for adding
+                    self.value_input = Input::default();
+                    self.mode = AppMode::AddingHomeValueCustom;
+                } else {
+                    // Insert the selected home path
+                    if let Some(item) = &self.current_add_item {
+                        self.insert_new_property(item.key.to_string(), selected_option);
+                    } else {
+                        self.cancel_adding(); // Should not happen, but cancel if no item context
+                    }
+                }
+            }
+        }
+    }
+
+    fn submit_home_add_custom(&mut self) {
+        let new_value = self.value_input.value().to_string();
+        if !new_value.is_empty() {
+            if let Some(item) = &self.current_add_item {
+                self.insert_new_property(item.key.to_string(), new_value);
+            } else {
+                self.cancel_adding();
+            }
+        } else {
+            self.cancel_adding(); // Cancel if the custom input is empty
+        }
     }
 }
 
@@ -501,114 +648,174 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                     app.mode = AppMode::Navigating;
                 }
                 if let Ok(true) = event::poll(Duration::from_millis(0)) {
-                   if let Event::Key(_) = event::read()? {
+                    if let Event::Key(_) = event::read()? {
                         app.mode = AppMode::Navigating;
                         app.status_timer = 0;
-                   }
+                    }
                 }
                 continue;
             }
-            
+
             if let Event::Key(key) = event::read()? {
                 match app.mode {
-                    AppMode::Navigating => {
-                        match key.code {
-                            KeyCode::Char('q') => return Ok(()),
-                            KeyCode::Char('s') => { app.save_to_file().unwrap_or_else(|_| {}); },
-                            KeyCode::Down | KeyCode::Char('j') => app.next(),
-                            KeyCode::Up | KeyCode::Char('k')=> app.previous(),
-                            KeyCode::Enter => app.start_editing(),
-                            KeyCode::Char('d') => app.start_confirm_delete(),
-                            KeyCode::Char('a') => app.start_adding(),
-                            _ => {}
+                    AppMode::Navigating => match key.code {
+                        KeyCode::Char('q') => return Ok(()),
+                        KeyCode::Char('s') => {
+                            app.save_to_file().unwrap_or_else(|_| {});
                         }
-                    }
-                    AppMode::EditingString => {
-                        match key.code {
-                            KeyCode::Enter => app.submit_string_editing(),
-                            KeyCode::Esc => app.cancel_editing(),
-                            _ => { app.value_input.handle_event(&Event::Key(key)); }
+                        KeyCode::Down | KeyCode::Char('j') => app.next(),
+                        KeyCode::Up | KeyCode::Char('k') => app.previous(),
+                        KeyCode::Enter => app.start_editing(),
+                        KeyCode::Char('d') => app.start_confirm_delete(),
+                        KeyCode::Char('a') => app.start_adding(),
+                        _ => {}
+                    },
+                    AppMode::EditingString => match key.code {
+                        KeyCode::Enter => app.submit_string_editing(),
+                        KeyCode::Esc => app.cancel_editing(),
+                        _ => {
+                            app.value_input.handle_event(&Event::Key(key));
                         }
-                    }
-                    AppMode::EditingBool => {
-                         match key.code {
-                            KeyCode::Enter => app.submit_bool_editing(),
-                            KeyCode::Esc => app.cancel_editing(),
-                            KeyCode::Char(' ') | KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
-                                app.toggle_bool_value();
-                            }
-                            _ => {}
+                    },
+                    AppMode::EditingBool => match key.code {
+                        KeyCode::Enter => app.submit_bool_editing(),
+                        KeyCode::Esc => app.cancel_editing(),
+                        KeyCode::Char(' ') | KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
+                            app.toggle_bool_value();
                         }
-                    }
-                    AppMode::EditingHome(ref mut list_state) => {
-                        match key.code {
-                            KeyCode::Enter => app.submit_home_editing(),
-                            KeyCode::Esc => app.cancel_editing(),
-                            KeyCode::Down | KeyCode::Char('j') => {
-                                let i = list_state.selected().unwrap_or(0);
-                                let next = if i >= app.home_dir_options.len() - 1 { 0 } else { i + 1 };
-                                list_state.select(Some(next));
-                            }
-                            KeyCode::Up | KeyCode::Char('k') => {
-                                let i = list_state.selected().unwrap_or(0);
-                                let prev = if i == 0 { app.home_dir_options.len() - 1 } else { i - 1 };
-                                list_state.select(Some(prev));
-                            }
-                            _ => {}
+                        _ => {}
+                    },
+                    AppMode::EditingHome(ref mut list_state) => match key.code {
+                        KeyCode::Enter => app.submit_home_editing(),
+                        KeyCode::Esc => app.cancel_editing(),
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            let i = list_state.selected().unwrap_or(0);
+                            let next = if i >= app.home_dir_options.len() - 1 {
+                                0
+                            } else {
+                                i + 1
+                            };
+                            list_state.select(Some(next));
                         }
-                    }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            let i = list_state.selected().unwrap_or(0);
+                            let prev = if i == 0 {
+                                app.home_dir_options.len() - 1
+                            } else {
+                                i - 1
+                            };
+                            list_state.select(Some(prev));
+                        }
+                        _ => {}
+                    },
                     // --- NEW: Key handling for custom home input ---
-                    AppMode::EditingHomeCustom => {
-                         match key.code {
-                            KeyCode::Enter => app.submit_home_custom_editing(),
-                            KeyCode::Esc => app.cancel_editing(),
-                            _ => { app.value_input.handle_event(&Event::Key(key)); }
+                    AppMode::EditingHomeCustom => match key.code {
+                        KeyCode::Enter => app.submit_home_custom_editing(),
+                        KeyCode::Esc => app.cancel_editing(),
+                        _ => {
+                            app.value_input.handle_event(&Event::Key(key));
+                        }
+                    },
+                    AppMode::ConfirmDelete => match key.code {
+                        KeyCode::Char('y') | KeyCode::Char('Y') => app.delete_selected(),
+                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                            app.cancel_delete()
+                        }
+                        _ => {}
+                    },
+                    AppMode::AddingKey(ref mut list_state) => match key.code {
+                        KeyCode::Enter => app.submit_key(),
+                        KeyCode::Esc => app.cancel_adding(),
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            let i = list_state.selected().unwrap_or(0);
+                            let next = if i >= SCHEMA.len() - 1 { 0 } else { i + 1 };
+                            list_state.select(Some(next));
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            let i = list_state.selected().unwrap_or(0);
+                            let prev = if i == 0 { SCHEMA.len() - 1 } else { i - 1 };
+                            list_state.select(Some(prev));
+                        }
+                        _ => {}
+                    },
+                    // --- NEW: Handle AddingStringValue ---
+                    AppMode::AddingStringValue => {
+                        if let Some(item) = &app.current_add_item {
+                            // Only handle String and StringList here
+                            if matches!(item.key_type, KeyType::String | KeyType::StringList) {
+                                match key.code {
+                                    KeyCode::Enter => app.submit_string_value(), // Use renamed function
+                                    KeyCode::Esc => app.cancel_adding(),
+                                    _ => {
+                                        app.value_input.handle_event(&Event::Key(key));
+                                    }
+                                }
+                            } else {
+                                // Should not happen in this state, but cancel just in case
+                                app.cancel_adding();
+                            }
+                        } else {
+                            app.cancel_adding();
                         }
                     }
-                    AppMode::ConfirmDelete => {
-                        match key.code {
-                            KeyCode::Char('y') | KeyCode::Char('Y') => app.delete_selected(),
-                            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => app.cancel_delete(),
-                            _ => {}
+
+                    // --- NEW: Handle AddingBoolValue ---
+                    AppMode::AddingBoolValue => {
+                        if let Some(item) = &app.current_add_item {
+                            if item.key_type == KeyType::Bool {
+                                match key.code {
+                                    KeyCode::Enter => app.submit_bool_value(), // Use new bool submit function
+                                    KeyCode::Esc => app.cancel_adding(),
+                                    KeyCode::Char(' ')
+                                    | KeyCode::Tab
+                                    | KeyCode::Left
+                                    | KeyCode::Right => {
+                                        app.toggle_bool_value();
+                                    }
+                                    _ => {}
+                                }
+                            } else {
+                                app.cancel_adding();
+                            }
+                        } else {
+                            app.cancel_adding();
                         }
                     }
-                    AppMode::AddingKey(ref mut list_state) => {
+
+                    // --- NEW: Handle AddingHomeValueSelect ---
+                    AppMode::AddingHomeValueSelect(ref mut list_state) => {
                         match key.code {
-                            KeyCode::Enter => app.submit_key(),
+                            KeyCode::Enter => app.submit_home_add_select(), // Use new select submit
                             KeyCode::Esc => app.cancel_adding(),
                             KeyCode::Down | KeyCode::Char('j') => {
                                 let i = list_state.selected().unwrap_or(0);
-                                let next = if i >= SCHEMA.len() - 1 { 0 } else { i + 1 };
+                                let next = if i >= app.home_dir_options.len() - 1 {
+                                    0
+                                } else {
+                                    i + 1
+                                };
                                 list_state.select(Some(next));
                             }
                             KeyCode::Up | KeyCode::Char('k') => {
                                 let i = list_state.selected().unwrap_or(0);
-                                let prev = if i == 0 { SCHEMA.len() - 1 } else { i - 1 };
+                                let prev = if i == 0 {
+                                    app.home_dir_options.len() - 1
+                                } else {
+                                    i - 1
+                                };
                                 list_state.select(Some(prev));
                             }
                             _ => {}
                         }
                     }
-                    AppMode::AddingValue => {
-                        if let Some(item) = &app.current_add_item {
-                            match item.key_type {
-                                KeyType::String | KeyType::StringList | KeyType::HomeDir => {
-                                    match key.code {
-                                        KeyCode::Enter => app.submit_value(),
-                                        KeyCode::Esc => app.cancel_adding(),
-                                        _ => { app.value_input.handle_event(&Event::Key(key)); }
-                                    }
-                                }
-                                KeyType::Bool => {
-                                    match key.code {
-                                        KeyCode::Enter => app.submit_value(),
-                                        KeyCode::Esc => app.cancel_adding(),
-                                        KeyCode::Char(' ') | KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
-                                            app.toggle_bool_value();
-                                        }
-                                        _ => {}
-                                    }
-                                }
+
+                    // --- NEW: Handle AddingHomeValueCustom ---
+                    AppMode::AddingHomeValueCustom => {
+                        match key.code {
+                            KeyCode::Enter => app.submit_home_add_custom(), // Use new custom submit
+                            KeyCode::Esc => app.cancel_adding(),
+                            _ => {
+                                app.value_input.handle_event(&Event::Key(key));
                             }
                         }
                     }
@@ -639,25 +846,44 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     f.render_widget(title_block, chunks[0]);
 
     let (footer_text, footer_style) = match &app.mode {
-        AppMode::Navigating => (" (q) Quit | (s) Save | (↑/↓) Nav | (a) Add | (d) Delete | (Enter) Edit ".to_string(), Style::default()),
-        AppMode::EditingString => (" (Enter) Accept | (Esc) Cancel ".to_string(), Style::default()),
-        AppMode::EditingBool => (" (Space/←/→) Toggle | (Enter) Accept | (Esc) Cancel ".to_string(), Style::default()),
-        AppMode::EditingHome(_) => (" (↑/↓) Select Home | (Enter) Accept | (Esc) Cancel ".to_string(), Style::default()),
-        AppMode::EditingHomeCustom => (" (Enter) Accept Custom Path | (Esc) Cancel ".to_string(), Style::default()),
-        AppMode::ConfirmDelete => (" Delete selected item? (y/n) ".to_string(), Style::default().fg(Color::Red)),
-        AppMode::AddingKey(_) => (" (↑/↓) Select Key | (Enter) Next | (Esc) Cancel ".to_string(), Style::default()),
-        AppMode::AddingValue => {
-            let text = if let Some(item) = &app.current_add_item {
-                match item.key_type {
-                    KeyType::Bool => " (Space/←/→) Toggle | (Enter) Accept | (Esc) Cancel ",
-                    _ => " (Enter) Accept | (Esc) Cancel ",
-                }
-            } else { "" };
-            (text.to_string(), Style::default())
-        },
-        AppMode::Saved => (" File saved successfully! ".to_string(), Style::default().fg(Color::Green)),
+        AppMode::Navigating => (
+            " (q) Quit | (s) Save | (↑/↓) Nav | (a) Add | (d) Delete | (Enter) Edit ".to_string(),
+            Style::default(),
+        ),
+        AppMode::EditingString => (
+            " (Enter) Accept | (Esc) Cancel ".to_string(),
+            Style::default(),
+        ),
+        AppMode::EditingBool => (
+            " (Space/←/→) Toggle | (Enter) Accept | (Esc) Cancel ".to_string(),
+            Style::default(),
+        ),
+        AppMode::EditingHome(_) => (
+            " (↑/↓) Select Home | (Enter) Accept | (Esc) Cancel ".to_string(),
+            Style::default(),
+        ),
+        AppMode::EditingHomeCustom => (
+            " (Enter) Accept Custom Path | (Esc) Cancel ".to_string(),
+            Style::default(),
+        ),
+        AppMode::ConfirmDelete => (
+            " Delete selected item? (y/n) ".to_string(),
+            Style::default().fg(Color::Red),
+        ),
+        AppMode::AddingKey(_) => (
+            " (↑/↓) Select Key | (Enter) Next | (Esc) Cancel ".to_string(),
+            Style::default(),
+        ),
+        AppMode::AddingStringValue => (" (Enter) Accept | (Esc) Cancel ".to_string(), Style::default()),
+        AppMode::AddingBoolValue => (" (Space/←/→) Toggle | (Enter) Accept | (Esc) Cancel ".to_string(), Style::default()),
+        AppMode::AddingHomeValueSelect(_) => (" (↑/↓) Select Home | (Enter) Accept | (Esc) Cancel ".to_string(), Style::default()),
+        AppMode::AddingHomeValueCustom => (" (Enter) Accept Custom Path | (Esc) Cancel ".to_string(), Style::default()),
+        AppMode::Saved => (
+            " File saved successfully! ".to_string(),
+            Style::default().fg(Color::Green),
+        ),
     };
-    
+
     let footer_block = Block::default()
         .borders(Borders::ALL)
         .title(footer_text)
@@ -681,7 +907,18 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         AppMode::EditingHomeCustom => draw_edit_home_custom_popup(f, app), // --- NEW ---
         AppMode::ConfirmDelete => draw_delete_popup(f),
         AppMode::AddingKey(list_state) => draw_add_key_popup(f, list_state),
-        AppMode::AddingValue => draw_add_value_popup(f, app),
+        AppMode::AddingStringValue => draw_add_string_value_popup(f, app), // Use specific draw function
+        AppMode::AddingBoolValue => draw_add_bool_value_popup(f, app), // Use specific draw function
+        AppMode::AddingHomeValueSelect(list_state) => {
+            // Reuse draw_edit_home_popup, potentially changing the title
+            draw_edit_home_popup(f, &app.home_dir_options, list_state);
+            // Or create a specific draw_add_home_select_popup if title needs changing
+        }
+        AppMode::AddingHomeValueCustom => {
+            // Reuse draw_edit_home_custom_popup
+            draw_edit_home_custom_popup(f, app);
+            // Or create a specific draw_add_home_custom_popup
+        }
         AppMode::Navigating | AppMode::Saved => {}
     }
 }
@@ -692,18 +929,22 @@ fn draw_edit_string_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
 
     let title = if let Some(index) = app.state.selected() {
         if let DisplayItem::Property(_, key, _) = &app.items[index] {
-             format!(" Edit Value for: {key} ")
-        } else { " Edit Value ".to_string() }
-    } else { " Edit Value ".to_string() };
-    
+            format!(" Edit Value for: {key} ")
+        } else {
+            " Edit Value ".to_string()
+        }
+    } else {
+        " Edit Value ".to_string()
+    };
+
     let width = area.width.max(3) - 3;
     let scroll = app.value_input.visual_scroll(width as usize);
-    
+
     let input = Paragraph::new(app.value_input.value())
         .style(Style::default().fg(Color::Yellow))
         .scroll((0, scroll as u16))
         .block(Block::default().borders(Borders::ALL).title(title));
-    
+
     f.render_widget(input, area);
 
     f.set_cursor(
@@ -716,7 +957,7 @@ fn draw_bool_toggle<B: Backend>(f: &mut Frame<B>, area: Rect, title: String, val
     let block = Block::default().borders(Borders::ALL).title(title);
     f.render_widget(Clear, area);
     f.render_widget(block, area);
-    
+
     let layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -724,19 +965,27 @@ fn draw_bool_toggle<B: Backend>(f: &mut Frame<B>, area: Rect, title: String, val
         .split(area);
 
     let true_style = if value {
-        Style::default().fg(Color::Green).add_modifier(Modifier::REVERSED)
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::REVERSED)
     } else {
         Style::default().fg(Color::DarkGray)
     };
     let false_style = if !value {
-        Style::default().fg(Color::Red).add_modifier(Modifier::REVERSED)
+        Style::default()
+            .fg(Color::Red)
+            .add_modifier(Modifier::REVERSED)
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
-    let true_text = Paragraph::new(" true ").style(true_style).alignment(Alignment::Center);
-    let false_text = Paragraph::new(" false ").style(false_style).alignment(Alignment::Center);
-    
+    let true_text = Paragraph::new(" true ")
+        .style(true_style)
+        .alignment(Alignment::Center);
+    let false_text = Paragraph::new(" false ")
+        .style(false_style)
+        .alignment(Alignment::Center);
+
     f.render_widget(true_text, layout[0]);
     f.render_widget(false_text, layout[1]);
 }
@@ -745,10 +994,14 @@ fn draw_edit_bool_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let area = centered_rect(40, 20, f.size());
     let title = if let Some(index) = app.state.selected() {
         if let DisplayItem::Property(_, key, _) = &app.items[index] {
-             format!(" Edit Value for: {key} ")
-        } else { " Edit Value ".to_string() }
-    } else { " Edit Value ".to_string() };
-    
+            format!(" Edit Value for: {key} ")
+        } else {
+            " Edit Value ".to_string()
+        }
+    } else {
+        " Edit Value ".to_string()
+    };
+
     draw_bool_toggle(f, area, title, app.current_bool_value);
 }
 
@@ -773,7 +1026,11 @@ fn draw_edit_home_popup<B: Backend>(
         .collect();
 
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title("Select Home Directory"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Select Home Directory"),
+        )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol(">> ");
 
@@ -786,15 +1043,15 @@ fn draw_edit_home_custom_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     f.render_widget(Clear, area);
 
     let title = " Enter Custom Home Path ";
-    
+
     let width = area.width.max(3) - 3;
     let scroll = app.value_input.visual_scroll(width as usize);
-    
+
     let input = Paragraph::new(app.value_input.value())
         .style(Style::default().fg(Color::Yellow))
         .scroll((0, scroll as u16))
         .block(Block::default().borders(Borders::ALL).title(title));
-    
+
     f.render_widget(input, area);
 
     f.set_cursor(
@@ -802,7 +1059,6 @@ fn draw_edit_home_custom_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         area.y + 1,
     )
 }
-
 
 fn draw_delete_popup<B: Backend>(f: &mut Frame<B>) {
     let area = centered_rect(40, 20, f.size());
@@ -815,7 +1071,7 @@ fn draw_delete_popup<B: Backend>(f: &mut Frame<B>) {
                 .borders(Borders::ALL)
                 .title(" Confirm Delete ")
                 .title_style(Style::default().fg(Color::Red))
-                .border_style(Style::default().fg(Color::Red))
+                .border_style(Style::default().fg(Color::Red)),
         );
     f.render_widget(text, area);
 }
@@ -824,46 +1080,58 @@ fn draw_add_key_popup<B: Backend>(f: &mut Frame<B>, list_state: &mut ListState) 
     let area = centered_rect(50, 80, f.size());
     f.render_widget(Clear, area);
 
-    let items: Vec<ListItem> = SCHEMA
-        .iter()
-        .map(|item| ListItem::new(item.key))
-        .collect();
+    let items: Vec<ListItem> = SCHEMA.iter().map(|item| ListItem::new(item.key)).collect();
 
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title("Select a Key to Add"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Select a Key to Add"),
+        )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol(">> ");
 
     f.render_stateful_widget(list, area, list_state);
 }
 
-fn draw_add_value_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
-    let area = centered_rect(60, 25, f.size());
-    let item = app.current_add_item.as_ref().unwrap();
-    let title = format!(" Enter Value for: {} ", item.key);
-    
-    match item.key_type {
-        KeyType::String | KeyType::StringList | KeyType::HomeDir => {
-            let width = area.width.max(3) - 3;
-            let scroll = app.value_input.visual_scroll(width as usize);
-            
-            let input = Paragraph::new(app.value_input.value())
-                .style(Style::default().fg(Color::Yellow))
-                .scroll((0, scroll as u16))
-                .block(Block::default().borders(Borders::ALL).title(title));
-            
-            f.render_widget(input, area);
 
-            f.set_cursor(
-                area.x + 1 + (app.value_input.visual_cursor().max(scroll) - scroll) as u16,
-                area.y + 1,
-            )
-        }
-        KeyType::Bool => {
-            draw_bool_toggle(f, area, title, app.current_bool_value);
-        }
-    }
+fn draw_add_string_value_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
+    let area = centered_rect(60, 25, f.size());
+    let item = app.current_add_item.as_ref().unwrap(); // Assume item exists
+    let title = format!(" Enter Value for: {} ", item.key);
+
+    // This part remains the same as the original AddingValue popup for strings
+    let width = area.width.max(3) - 3;
+    let scroll = app.value_input.visual_scroll(width as usize);
+
+    let input = Paragraph::new(app.value_input.value())
+        .style(Style::default().fg(Color::Yellow))
+        .scroll((0, scroll as u16))
+        .block(Block::default().borders(Borders::ALL).title(title));
+
+    f.render_widget(Clear, area); // Clear area before drawing
+    f.render_widget(input, area);
+
+    f.set_cursor(
+        area.x + 1 + (app.value_input.visual_cursor().max(scroll) - scroll) as u16,
+        area.y + 1,
+    )
 }
+
+// New draw function for adding boolean values
+fn draw_add_bool_value_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
+    let area = centered_rect(40, 20, f.size());
+    let item = app.current_add_item.as_ref().unwrap(); // Assume item exists
+    let title = format!(" Set Value for: {} ", item.key);
+
+    // Reuse the draw_bool_toggle helper function
+    draw_bool_toggle(f, area, title, app.current_bool_value);
+}
+
+// Note: For AddingHomeValueSelect and AddingHomeValueCustom, we are currently
+// reusing draw_edit_home_popup and draw_edit_home_custom_popup respectively.
+// If you need different titles or slightly different behavior, you would
+// create draw_add_home_select_popup and draw_add_home_custom_popup.
 
 /// Helper function to create a centered rectangle for the popup.
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
