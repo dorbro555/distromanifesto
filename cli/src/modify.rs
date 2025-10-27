@@ -309,10 +309,10 @@ impl<'a> App<'a> {
     }
 
     fn cancel_editing(&mut self) {
-            self.mode = AppMode::Navigating;
-            self.value_input = Input::default();
-            self.home_dir_options.clear();
-        }
+        self.mode = AppMode::Navigating;
+        self.value_input = Input::default();
+        self.home_dir_options.clear();
+    }
 
     // --- NEW: Helper function to apply the edit ---
     fn set_edited_value(&mut self, new_value: String) {
@@ -523,10 +523,10 @@ impl<'a> App<'a> {
     }
 
     fn cancel_adding(&mut self) {
-            self.mode = AppMode::Navigating;
-            self.current_add_item = None;
-            self.value_input = Input::default();
-            self.home_dir_options.clear();
+        self.mode = AppMode::Navigating;
+        self.current_add_item = None;
+        self.value_input = Input::default();
+        self.home_dir_options.clear();
     }
 
     fn toggle_bool_value(&mut self) {
@@ -908,10 +908,15 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         AppMode::AddingStringValue => draw_add_string_value_popup(f, app), // Use specific draw function
         AppMode::AddingBoolValue => draw_add_bool_value_popup(f, app), // Use specific draw function
         AppMode::SelectingHome(list_state) => {
-            draw_edit_home_popup(f, &app.home_dir_options, list_state);
+            draw_edit_home_popup(
+                f,
+                &app.home_dir_options,
+                app.current_add_item.is_some(),
+                list_state,
+            );
         }
         AppMode::CustomHomeInput => {
-            draw_edit_home_custom_popup(f, app);
+            draw_edit_home_custom_popup(f, &mut app.value_input, app.current_add_item.is_some());
         }
         AppMode::Navigating | AppMode::Saved => {}
     }
@@ -1001,16 +1006,16 @@ fn draw_edit_bool_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
 
 fn draw_edit_home_popup<B: Backend>(
     f: &mut Frame<B>,
-    home_dir_options: &Vec<String>,
+    home_dir_options: &Vec<String>, // CHANGED
+    is_adding: bool,                // ADDED
     list_state: &mut ListState,
 ) {
     let area = centered_rect(50, 80, f.size());
     f.render_widget(Clear, area);
 
-    let items: Vec<ListItem> = home_dir_options
+    let items: Vec<ListItem> = home_dir_options // CHANGED (no app.)
         .iter()
         .map(|opt| {
-            // --- NEW: Style the custom option ---
             if opt == CUSTOM_HOME_PATH_OPTION {
                 ListItem::new(opt.as_str()).style(Style::default().fg(Color::Yellow))
             } else {
@@ -1020,36 +1025,50 @@ fn draw_edit_home_popup<B: Backend>(
         .collect();
 
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Select Home Directory"),
-        )
+        .block(Block::default().borders(Borders::ALL).title(
+            // --- DYNAMIC TITLE LOGIC ---
+            if is_adding {
+                // CHANGED (no app.)
+                " Add Value for: home "
+            } else {
+                " Edit Value for: home "
+            }, // --- END DYNAMIC TITLE ---
+        ))
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol(">> ");
 
     f.render_stateful_widget(list, area, list_state);
 }
 
-// --- NEW: Popup for custom home path input ---
-fn draw_edit_home_custom_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
+fn draw_edit_home_custom_popup<B: Backend>(
+    f: &mut Frame<B>,
+    input: &mut Input, // ADDED
+    is_adding: bool,   // ADDED
+) {
     let area = centered_rect(60, 20, f.size());
     f.render_widget(Clear, area);
 
-    let title = " Enter Custom Home Path ";
+    // --- DYNAMIC TITLE LOGIC ---
+    let title = if is_adding {
+        // CHANGED (no app.)
+        " Add Custom Path for: home "
+    } else {
+        " Edit Custom Path for: home "
+    };
+    // --- END DYNAMIC TITLE ---
 
     let width = area.width.max(3) - 3;
-    let scroll = app.value_input.visual_scroll(width as usize);
+    let scroll = input.visual_scroll(width as usize); // CHANGED (no app.)
 
-    let input = Paragraph::new(app.value_input.value())
+    let input_para = Paragraph::new(input.value()) // CHANGED (no app.)
         .style(Style::default().fg(Color::Yellow))
         .scroll((0, scroll as u16))
         .block(Block::default().borders(Borders::ALL).title(title));
 
-    f.render_widget(input, area);
+    f.render_widget(input_para, area); // Renamed variable to avoid shadowing
 
     f.set_cursor(
-        area.x + 1 + (app.value_input.visual_cursor().max(scroll) - scroll) as u16,
+        area.x + 1 + (input.visual_cursor().max(scroll) - scroll) as u16, // CHANGED (no app.)
         area.y + 1,
     )
 }
