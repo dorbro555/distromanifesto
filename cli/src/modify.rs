@@ -150,20 +150,23 @@ impl Schema {
 
 // --- App State ---
 
-// Inside the AppMode enum definition
 enum AppMode {
     Navigating,
     EditingString,
     EditingBool,
-    EditingHome(ListState),
-    EditingHomeCustom,
+    // EditingHome(ListState), // REMOVED
+    // EditingHomeCustom, // REMOVED
     ConfirmDelete,
     AddingKey(ListState),
-    // AddingValue, // Remove or rename this
-    AddingStringValue,                // Renamed from AddingValue
-    AddingBoolValue,                  // New state for adding bools
-    AddingHomeValueSelect(ListState), // New state for selecting home on add
-    AddingHomeValueCustom,            // New state for custom home input on add
+    AddingStringValue,
+    AddingBoolValue,
+    // AddingHomeValueSelect(ListState), // REMOVED
+    // AddingHomeValueCustom, // REMOVED
+
+    // --- ADDED: Generic states ---
+    SelectingHome(ListState),
+    CustomHomeInput,
+
     Saved,
 }
 
@@ -294,7 +297,7 @@ impl<'a> App<'a> {
                         let current_idx =
                             self.home_dir_options.iter().position(|h| *h == value_clone);
                         list_state.select(current_idx.or(Some(0)));
-                        self.mode = AppMode::EditingHome(list_state);
+                        self.mode = AppMode::SelectingHome(list_state);
                     }
                     KeyType::String | KeyType::StringList => {
                         self.value_input = Input::new(value_clone);
@@ -306,10 +309,10 @@ impl<'a> App<'a> {
     }
 
     fn cancel_editing(&mut self) {
-        self.mode = AppMode::Navigating;
-        self.value_input = Input::default();
-        self.home_dir_options.clear();
-    }
+            self.mode = AppMode::Navigating;
+            self.value_input = Input::default();
+            self.home_dir_options.clear();
+        }
 
     // --- NEW: Helper function to apply the edit ---
     fn set_edited_value(&mut self, new_value: String) {
@@ -336,14 +339,14 @@ impl<'a> App<'a> {
     }
 
     fn submit_home_editing(&mut self) {
-        if let AppMode::EditingHome(list_state) = &self.mode {
+        if let AppMode::SelectingHome(list_state) = &self.mode {
             if let Some(selected_home_index) = list_state.selected() {
                 let selected_option = self.home_dir_options[selected_home_index].clone();
 
                 if selected_option == CUSTOM_HOME_PATH_OPTION {
                     // --- NEW: Transition to custom input mode ---
                     self.value_input = Input::default();
-                    self.mode = AppMode::EditingHomeCustom;
+                    self.mode = AppMode::CustomHomeInput;
                 } else {
                     // --- This is now fixed to use the full path ---
                     self.set_edited_value(selected_option);
@@ -442,33 +445,36 @@ impl<'a> App<'a> {
         self.mode = AppMode::AddingKey(list_state);
     }
 
-    // Inside impl App<'a>
-    fn submit_key(&mut self) {
-        if let AppMode::AddingKey(list_state) = &mut self.mode {
-            if let Some(index) = list_state.selected() {
-                let schema_item = SCHEMA[index].clone();
-                self.current_add_item = Some(schema_item.clone());
+    // In impl App<'a>
 
-                match schema_item.key_type {
-                    KeyType::String | KeyType::StringList => {
-                        self.value_input = Input::default();
-                        self.mode = AppMode::AddingStringValue; // Use renamed state
-                    }
-                    KeyType::HomeDir => {
-                        // --- START CHANGE ---
-                        self.load_home_dir_options(); // Load options
-                        let mut home_list_state = ListState::default();
-                        home_list_state.select(Some(0)); // Select first option
-                        self.mode = AppMode::AddingHomeValueSelect(home_list_state);
-                        // Transition to new state
-                        // --- END CHANGE ---
-                    }
-                    KeyType::Bool => {
-                        self.current_bool_value = true; // Default to true
-                        self.mode = AppMode::AddingBoolValue; // Transition to new bool state
-                    }
+    fn submit_key(&mut self) {
+        // First, get the selected index without holding the borrow on self.mode
+        let selected_index: Option<usize> = if let AppMode::AddingKey(list_state) = &mut self.mode {
+            list_state.selected()
+        } else {
+            None
+        };
+
+        // Now, use the index to modify self.mode
+        if let Some(index) = selected_index {
+            let schema_item = SCHEMA[index].clone();
+            self.current_add_item = Some(schema_item.clone());
+
+            match schema_item.key_type {
+                KeyType::String | KeyType::StringList => {
+                    self.value_input = Input::default();
+                    self.mode = AppMode::AddingStringValue;
                 }
-                // self.mode = AppMode::AddingValue; // Remove this line
+                KeyType::HomeDir => {
+                    self.load_home_dir_options();
+                    let mut home_list_state = ListState::default();
+                    home_list_state.select(Some(0));
+                    self.mode = AppMode::SelectingHome(home_list_state);
+                }
+                KeyType::Bool => {
+                    self.current_bool_value = true;
+                    self.mode = AppMode::AddingBoolValue;
+                }
             }
         }
     }
@@ -517,10 +523,10 @@ impl<'a> App<'a> {
     }
 
     fn cancel_adding(&mut self) {
-        self.mode = AppMode::Navigating;
-        self.current_add_item = None;
-        self.value_input = Input::default();
-        self.home_dir_options.clear();
+            self.mode = AppMode::Navigating;
+            self.current_add_item = None;
+            self.value_input = Input::default();
+            self.home_dir_options.clear();
     }
 
     fn toggle_bool_value(&mut self) {
@@ -573,14 +579,14 @@ impl<'a> App<'a> {
     }
 
     fn submit_home_add_select(&mut self) {
-        if let AppMode::AddingHomeValueSelect(list_state) = &self.mode {
+        if let AppMode::SelectingHome(list_state) = &self.mode {
             if let Some(selected_home_index) = list_state.selected() {
                 let selected_option = self.home_dir_options[selected_home_index].clone();
 
                 if selected_option == CUSTOM_HOME_PATH_OPTION {
                     // Transition to custom input mode for adding
                     self.value_input = Input::default();
-                    self.mode = AppMode::AddingHomeValueCustom;
+                    self.mode = AppMode::CustomHomeInput;
                 } else {
                     // Insert the selected home path
                     if let Some(item) = &self.current_add_item {
@@ -685,37 +691,6 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                         }
                         _ => {}
                     },
-                    AppMode::EditingHome(ref mut list_state) => match key.code {
-                        KeyCode::Enter => app.submit_home_editing(),
-                        KeyCode::Esc => app.cancel_editing(),
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            let i = list_state.selected().unwrap_or(0);
-                            let next = if i >= app.home_dir_options.len() - 1 {
-                                0
-                            } else {
-                                i + 1
-                            };
-                            list_state.select(Some(next));
-                        }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            let i = list_state.selected().unwrap_or(0);
-                            let prev = if i == 0 {
-                                app.home_dir_options.len() - 1
-                            } else {
-                                i - 1
-                            };
-                            list_state.select(Some(prev));
-                        }
-                        _ => {}
-                    },
-                    // --- NEW: Key handling for custom home input ---
-                    AppMode::EditingHomeCustom => match key.code {
-                        KeyCode::Enter => app.submit_home_custom_editing(),
-                        KeyCode::Esc => app.cancel_editing(),
-                        _ => {
-                            app.value_input.handle_event(&Event::Key(key));
-                        }
-                    },
                     AppMode::ConfirmDelete => match key.code {
                         KeyCode::Char('y') | KeyCode::Char('Y') => app.delete_selected(),
                         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
@@ -781,12 +756,23 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                             app.cancel_adding();
                         }
                     }
-
-                    // --- NEW: Handle AddingHomeValueSelect ---
-                    AppMode::AddingHomeValueSelect(ref mut list_state) => {
+                    // --- ADDED: Merged state for home selection ---
+                    AppMode::SelectingHome(ref mut list_state) => {
                         match key.code {
-                            KeyCode::Enter => app.submit_home_add_select(), // Use new select submit
-                            KeyCode::Esc => app.cancel_adding(),
+                            KeyCode::Enter => {
+                                if app.current_add_item.is_none() {
+                                    app.submit_home_editing(); // We are EDITING
+                                } else {
+                                    app.submit_home_add_select(); // We are ADDING
+                                }
+                            }
+                            KeyCode::Esc => {
+                                if app.current_add_item.is_none() {
+                                    app.cancel_editing(); // We are EDITING
+                                } else {
+                                    app.cancel_adding(); // We are ADDING
+                                }
+                            }
                             KeyCode::Down | KeyCode::Char('j') => {
                                 let i = list_state.selected().unwrap_or(0);
                                 let next = if i >= app.home_dir_options.len() - 1 {
@@ -808,12 +794,23 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                             _ => {}
                         }
                     }
-
-                    // --- NEW: Handle AddingHomeValueCustom ---
-                    AppMode::AddingHomeValueCustom => {
+                    // --- ADDED: Merged state for custom home input ---
+                    AppMode::CustomHomeInput => {
                         match key.code {
-                            KeyCode::Enter => app.submit_home_add_custom(), // Use new custom submit
-                            KeyCode::Esc => app.cancel_adding(),
+                            KeyCode::Enter => {
+                                if app.current_add_item.is_none() {
+                                    app.submit_home_custom_editing(); // We are EDITING
+                                } else {
+                                    app.submit_home_add_custom(); // We are ADDING
+                                }
+                            }
+                            KeyCode::Esc => {
+                                if app.current_add_item.is_none() {
+                                    app.cancel_editing(); // We are EDITING
+                                } else {
+                                    app.cancel_adding(); // We are ADDING
+                                }
+                            }
                             _ => {
                                 app.value_input.handle_event(&Event::Key(key));
                             }
@@ -858,14 +855,6 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             " (Space/←/→) Toggle | (Enter) Accept | (Esc) Cancel ".to_string(),
             Style::default(),
         ),
-        AppMode::EditingHome(_) => (
-            " (↑/↓) Select Home | (Enter) Accept | (Esc) Cancel ".to_string(),
-            Style::default(),
-        ),
-        AppMode::EditingHomeCustom => (
-            " (Enter) Accept Custom Path | (Esc) Cancel ".to_string(),
-            Style::default(),
-        ),
         AppMode::ConfirmDelete => (
             " Delete selected item? (y/n) ".to_string(),
             Style::default().fg(Color::Red),
@@ -874,10 +863,23 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             " (↑/↓) Select Key | (Enter) Next | (Esc) Cancel ".to_string(),
             Style::default(),
         ),
-        AppMode::AddingStringValue => (" (Enter) Accept | (Esc) Cancel ".to_string(), Style::default()),
-        AppMode::AddingBoolValue => (" (Space/←/→) Toggle | (Enter) Accept | (Esc) Cancel ".to_string(), Style::default()),
-        AppMode::AddingHomeValueSelect(_) => (" (↑/↓) Select Home | (Enter) Accept | (Esc) Cancel ".to_string(), Style::default()),
-        AppMode::AddingHomeValueCustom => (" (Enter) Accept Custom Path | (Esc) Cancel ".to_string(), Style::default()),
+        AppMode::AddingStringValue => (
+            " (Enter) Accept | (Esc) Cancel ".to_string(),
+            Style::default(),
+        ),
+        AppMode::AddingBoolValue => (
+            " (Space/←/→) Toggle | (Enter) Accept | (Esc) Cancel ".to_string(),
+            Style::default(),
+        ),
+        // --- ADDED: Merged footer text ---
+        AppMode::SelectingHome(_) => (
+            " (↑/↓) Select Home | (Enter) Accept | (Esc) Cancel ".to_string(),
+            Style::default(),
+        ),
+        AppMode::CustomHomeInput => (
+            " (Enter) Accept Custom Path | (Esc) Cancel ".to_string(),
+            Style::default(),
+        ),
         AppMode::Saved => (
             " File saved successfully! ".to_string(),
             Style::default().fg(Color::Green),
@@ -901,23 +903,15 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     match &mut app.mode {
         AppMode::EditingString => draw_edit_string_popup(f, app),
         AppMode::EditingBool => draw_edit_bool_popup(f, app),
-        AppMode::EditingHome(list_state) => {
-            draw_edit_home_popup(f, &app.home_dir_options, list_state)
-        }
-        AppMode::EditingHomeCustom => draw_edit_home_custom_popup(f, app), // --- NEW ---
         AppMode::ConfirmDelete => draw_delete_popup(f),
         AppMode::AddingKey(list_state) => draw_add_key_popup(f, list_state),
         AppMode::AddingStringValue => draw_add_string_value_popup(f, app), // Use specific draw function
         AppMode::AddingBoolValue => draw_add_bool_value_popup(f, app), // Use specific draw function
-        AppMode::AddingHomeValueSelect(list_state) => {
-            // Reuse draw_edit_home_popup, potentially changing the title
+        AppMode::SelectingHome(list_state) => {
             draw_edit_home_popup(f, &app.home_dir_options, list_state);
-            // Or create a specific draw_add_home_select_popup if title needs changing
         }
-        AppMode::AddingHomeValueCustom => {
-            // Reuse draw_edit_home_custom_popup
+        AppMode::CustomHomeInput => {
             draw_edit_home_custom_popup(f, app);
-            // Or create a specific draw_add_home_custom_popup
         }
         AppMode::Navigating | AppMode::Saved => {}
     }
@@ -1093,7 +1087,6 @@ fn draw_add_key_popup<B: Backend>(f: &mut Frame<B>, list_state: &mut ListState) 
 
     f.render_stateful_widget(list, area, list_state);
 }
-
 
 fn draw_add_string_value_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let area = centered_rect(60, 25, f.size());
