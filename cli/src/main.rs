@@ -7,6 +7,7 @@ mod wizard;
 mod verify;
 mod modify;
 mod constants;
+mod create;
 
 #[derive(Parser)]
 #[command(name = "distromanifesto")]
@@ -21,7 +22,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Create a new manifest with an interactive wizard
-    Wizard,
+    Create {
+        /// The path to the new manifest file to create
+        #[arg(required = true)]
+        file_path: PathBuf,
+    },
     /// Verify the syntax of a manifest file
     Verify {
         /// The path to the manifest file to verify
@@ -43,8 +48,11 @@ fn main() -> Result<()> {
     setup::ensure_hidden_dir()?;
 
     match cli.command {
-        Some(Commands::Wizard) => {
-            wizard::launch_wizard()?;
+        // Some(Commands::Wizard) => {
+        //     wizard::launch_wizard()?;
+        // }
+        Some(Commands::Create {file_path}) => {
+            create::launch_creator(&file_path)?
         }
         Some(Commands::Verify { file }) => {
             let content = std::fs::read_to_string(&file)?;
