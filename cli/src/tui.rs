@@ -12,7 +12,7 @@ use ratatui::{
     prelude::*,
     terminal::{Frame, Terminal},
     text::Span,
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 use std::{
     collections::HashMap,
@@ -39,96 +39,119 @@ enum KeyType {
 struct SchemaItem {
     key: &'static str,
     key_type: KeyType,
+    description: &'static str,
 }
 
 const SCHEMA: &[SchemaItem] = &[
-    SchemaItem {
-        key: "image",
-        key_type: KeyType::Image,
+    SchemaItem { 
+        key: "image", 
+        key_type: KeyType::Image, 
+        description: "Container image to use (e.g., 'fedora-toolbox:40'). REQUIRED." 
     },
-    SchemaItem {
-        key: "clone",
-        key_type: KeyType::String,
+    SchemaItem { 
+        key: "clone", 
+        key_type: KeyType::String, 
+        description: "Name of an existing distrobox to clone from." 
     },
-    SchemaItem {
-        key: "home",
-        key_type: KeyType::HomeDir,
+    SchemaItem { 
+        key: "home", 
+        key_type: KeyType::HomeDir, 
+        description: "The home directory strategy (e.g., 'host', 'none', or a custom path)." 
     },
-    SchemaItem {
-        key: "exported_bins_path",
-        key_type: KeyType::String,
+    SchemaItem { 
+        key: "exported_bins_path", 
+        key_type: KeyType::String, 
+        description: "Directory on the host to export binaries to (e.g., '~/.local/bin')." 
     },
-    SchemaItem {
-        key: "additional_flags",
-        key_type: KeyType::StringList,
+    SchemaItem { 
+        key: "additional_flags", 
+        key_type: KeyType::StringList, 
+        description: "Extra flags to pass to the container runtime (e.g., '--privileged')." 
     },
-    SchemaItem {
-        key: "additional_packages",
-        key_type: KeyType::StringList,
+    SchemaItem { 
+        key: "additional_packages", 
+        key_type: KeyType::StringList, 
+        description: "Packages to install on first boot (e.g., 'git', 'neovim')." 
     },
-    SchemaItem {
-        key: "init_hooks",
-        key_type: KeyType::StringList,
+    SchemaItem { 
+        key: "init_hooks", 
+        key_type: KeyType::StringList, 
+        description: "Commands to run inside the container on *every* start." 
     },
-    SchemaItem {
-        key: "pre_init_hooks",
-        key_type: KeyType::StringList,
+    SchemaItem { 
+        key: "pre_init_hooks", 
+        key_type: KeyType::StringList, 
+        description: "Commands to run *before* init on *every* start." 
     },
-    SchemaItem {
-        key: "volume",
-        key_type: KeyType::StringList,
+    SchemaItem { 
+        key: "volume", 
+        key_type: KeyType::StringList, 
+        description: "Mount a volume (e.g., '/host/path:/container/path')." 
     },
-    SchemaItem {
-        key: "exported_apps",
-        key_type: KeyType::StringList,
+    SchemaItem { 
+        key: "exported_apps", 
+        key_type: KeyType::StringList, 
+        description: "Apps to export to the host menu (e.g., 'firefox.desktop')." 
     },
-    SchemaItem {
-        key: "exported_bins",
-        key_type: KeyType::StringList,
+    SchemaItem { 
+        key: "exported_bins", 
+        key_type: KeyType::StringList, 
+        description: "Binaries to export to the host (e.g., 'nvim', 'npm')." 
     },
-    SchemaItem {
-        key: "entry",
-        key_type: KeyType::Bool,
+    SchemaItem { 
+        key: "entry", 
+        key_type: KeyType::Bool, 
+        description: "DEPRECATED. Use 'init' or 'init_hooks' instead." 
     },
-    SchemaItem {
-        key: "start_now",
-        key_type: KeyType::Bool,
+    SchemaItem { 
+        key: "start_now", 
+        key_type: KeyType::Bool, 
+        description: "Start the container immediately after creation (true/false)." 
     },
-    SchemaItem {
-        key: "init",
-        key_type: KeyType::Bool,
+    SchemaItem { 
+        key: "init", 
+        key_type: KeyType::Bool, 
+        description: "Use 'init' as the entrypoint (true/false)." 
     },
-    SchemaItem {
-        key: "nvidia",
-        key_type: KeyType::Bool,
+    SchemaItem { 
+        key: "nvidia", 
+        key_type: KeyType::Bool, 
+        description: "Enable NVIDIA GPU support (true/false)." 
     },
-    SchemaItem {
-        key: "pull",
-        key_type: KeyType::Bool,
+    SchemaItem { 
+        key: "pull", 
+        key_type: KeyType::Bool, 
+        description: "Force pull the image before creating (true/false)." 
     },
-    SchemaItem {
-        key: "root",
-        key_type: KeyType::Bool,
+    SchemaItem { 
+        key: "root", 
+        key_type: KeyType::Bool, 
+        description: "Run the container as root (true/false)." 
     },
-    SchemaItem {
-        key: "unshare_ipc",
-        key_type: KeyType::Bool,
+    SchemaItem { 
+        key: "unshare_ipc", 
+        key_type: KeyType::Bool, 
+        description: "Do not share IPC namespace with the host (true/false)." 
     },
-    SchemaItem {
-        key: "unshare_netns",
-        key_type: KeyType::Bool,
+    SchemaItem { 
+        key: "unshare_netns", 
+        key_type: KeyType::Bool, 
+        description: "Do not share network namespace with the host (true/false)." 
     },
-    SchemaItem {
-        key: "unshare_process",
-        key_type: KeyType::Bool,
+    SchemaItem { 
+        key: "unshare_process", 
+        key_type: KeyType::Bool, 
+        description: "Do not share process namespace with the host (true/false)." 
     },
-    SchemaItem {
-        key: "unshare_devsys",
-        key_type: KeyType::Bool,
+    SchemaItem { 
+        key: "unshare_devsys", 
+        key_type: KeyType::Bool, 
+        description: "Do not share /dev/sysfs with the host (true/false)." 
     },
-    SchemaItem {
-        key: "unshare_all",
-        key_type: KeyType::Bool,
+    SchemaItem { 
+        key: "unshare_all", 
+        key_type: KeyType::Bool, 
+        description: "Unshare all possible namespaces (true/false)." 
     },
 ];
 
@@ -1031,8 +1054,8 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             Style::default().fg(Color::Red),
         ),
         AppMode::AddingKey(_) => (
-            " (↑/↓) Select Key | (Enter) Next | (Esc) Cancel ".to_string(),
-            Style::default(),
+            " (↑/↓) Select | (Enter) Next | (Esc) Cancel ".to_string(),
+            Style::default().fg(Color::Cyan), // Keep the title cyan
         ),
         AppMode::AddingStringValue => (
             " (Enter) Accept | (Esc) Cancel ".to_string(),
@@ -1071,6 +1094,27 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         .title_style(footer_style)
         .border_style(footer_style);
     f.render_widget(footer_block, chunks[2]);
+    if let AppMode::AddingKey(list_state) = &app.mode {
+        // Create a temporary block *identic* to the footer_block 
+        // just to calculate its inner area.
+        let block_for_inner = Block::default().borders(Borders::ALL);
+        let inner_footer_area = block_for_inner.inner(chunks[2]);
+        
+        let description = list_state.selected()
+            .map_or("".to_string(), |index| {
+                SCHEMA.get(index)
+                        .map_or("".to_string(), |item| item.description.to_string())
+            });
+        let text = format!("[Hint: {description}]");
+        
+        let hint_para = Paragraph::new(text)
+            .style(Style::default().fg(Color::Cyan))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }); // Wrap in case description is too long
+        
+        // Render the hint inside the footer area
+        f.render_widget(hint_para, inner_footer_area);
+    }
 
     let list = List::new(app.list_items.clone())
         .block(Block::default().title("Manifest").borders(Borders::ALL))
