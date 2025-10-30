@@ -22,11 +22,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Create a new manifest with an interactive wizard
-    Create {
-        /// The path to the new manifest file to create
-        #[arg(required = true)]
-        file_path: PathBuf,
-    },
+    Create,
     /// Verify the syntax of a manifest file
     Verify {
         /// The path to the manifest file to verify
@@ -51,8 +47,8 @@ fn main() -> Result<()> {
         // Some(Commands::Wizard) => {
         //     wizard::launch_wizard()?;
         // }
-        Some(Commands::Create {file_path}) => {
-            create::launch_creator(&file_path)?
+        Some(Commands::Create) => {
+            create::launch_creator()?
         }
         Some(Commands::Verify { file }) => {
             let content = std::fs::read_to_string(&file)?;

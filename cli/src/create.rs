@@ -6,7 +6,11 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use distro_ini::Ini; // Use our aliased crate
-use inquire::Text;
+use inquire::{
+    Text,
+    ui::RenderConfig,
+};
+use dirs::home_dir;
 use ratatui::{
     backend::Backend,
     backend::CrosstermBackend,
@@ -693,7 +697,36 @@ impl<'a> App<'a> {
 
 // --- Main TUI Functions ---
 
-pub fn launch_creator(file_path: &Path) -> Result<()> {
+// In cli/src/create.rs
+
+// REPLACE this whole function
+// In cli/src/create.rs
+
+pub fn launch_creator() -> Result<()> {
+    // 1. Set up the custom render config for inquire
+    let render_config = RenderConfig::default();
+
+    // 2. Prompt for the section name with the new config
+    let section_name = Text::new("Enter the name for the first section:")
+        .with_default("default")
+        .with_render_config(render_config)
+        .prompt()?;
+
+    // 3. Get the manifest homes directory
+    let mut file_path = home_dir() // <-- CORRECTED: Use home_dir
+        .ok_or_else(|| anyhow!("Could not find user home directory"))?;
+    file_path.push(".distromanifesto"); // <-- CORRECTED: Path
+    file_path.push("homes");            // <-- CORRECTED: Path
+    
+    // 4. Ensure this directory exists
+    // (This path is already created by the `setup` command, 
+    // but it's good practice to have it here too)
+    fs::create_dir_all(&file_path)?; 
+
+    // 5. Create the final file path from the section name
+    file_path.push(format!("{}.ini", section_name));
+    
+    // 6. Check if file exists (this logic is the same)
     if file_path.exists() {
         return Err(anyhow!(
             "File already exists at: {}. Use 'modify' to edit.",
@@ -701,16 +734,13 @@ pub fn launch_creator(file_path: &Path) -> Result<()> {
         ));
     }
 
-    let section_name = Text::new("Enter the name for the first section:")
-        .with_default("default")
-        .prompt()?;
-
-    let mut app = App::new(file_path, section_name);
+    // 7. Launch the TUI (this logic is the same)
+    let mut app = App::new(&file_path, section_name);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout); // <-- Corrected: use `stdout`
+    let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let res = run_app(&mut terminal, &mut app);
