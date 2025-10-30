@@ -21,6 +21,7 @@ use std::{
 };
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
+use crate::constants::{CUSTOM_OCI_IMAGE_OPTION, DISTROBOX_IMAGES};
 
 // --- Schema Definition ---
 
@@ -30,6 +31,7 @@ enum KeyType {
     StringList,
     Bool,
     HomeDir,
+    Image,
 }
 
 #[derive(Clone)]
@@ -39,10 +41,7 @@ struct SchemaItem {
 }
 
 const SCHEMA: &[SchemaItem] = &[
-    SchemaItem {
-        key: "image",
-        key_type: KeyType::String,
-    },
+SchemaItem { key: "image", key_type: KeyType::Image },
     SchemaItem {
         key: "clone",
         key_type: KeyType::String,
@@ -154,19 +153,14 @@ enum AppMode {
     Navigating,
     EditingString,
     EditingBool,
-    // EditingHome(ListState), // REMOVED
-    // EditingHomeCustom, // REMOVED
     ConfirmDelete,
     AddingKey(ListState),
     AddingStringValue,
     AddingBoolValue,
-    // AddingHomeValueSelect(ListState), // REMOVED
-    // AddingHomeValueCustom, // REMOVED
-
-    // --- ADDED: Generic states ---
     SelectingHome(ListState),
     CustomHomeInput,
-
+    SelectingImage(ListState),
+    CustomImageInput,
     Saved,
 }
 
@@ -189,6 +183,7 @@ struct App<'a> {
     status_timer: u8,
     schema: Schema,
     home_dir_options: Vec<String>,
+    image_options: Vec<String>,
 }
 
 impl<'a> App<'a> {
@@ -211,6 +206,7 @@ impl<'a> App<'a> {
             status_timer: 0,
             schema: Schema::new(),
             home_dir_options: Vec::new(),
+            image_options: Vec::new(),
         };
         app.parse_conf_to_items(conf);
         app
@@ -299,6 +295,16 @@ impl<'a> App<'a> {
                         list_state.select(current_idx.or(Some(0)));
                         self.mode = AppMode::SelectingHome(list_state);
                     }
+                    KeyType::Image => {
+                        self.load_image_options();
+                        let mut list_state = ListState::default();
+                        let current_idx = self
+                            .image_options
+                            .iter()
+                            .position(|h| *h == value_clone);
+                        list_state.select(current_idx.or(Some(0)));
+                        self.mode = AppMode::SelectingImage(list_state);
+                    }
                     KeyType::String | KeyType::StringList => {
                         self.value_input = Input::new(value_clone);
                         self.mode = AppMode::EditingString;
@@ -312,6 +318,7 @@ impl<'a> App<'a> {
         self.mode = AppMode::Navigating;
         self.value_input = Input::default();
         self.home_dir_options.clear();
+        self.image_options.clear();
     }
 
     // --- NEW: Helper function to apply the edit ---
@@ -355,8 +362,34 @@ impl<'a> App<'a> {
         }
     }
 
+    fn submit_image_editing(&mut self) {
+        if let AppMode::SelectingImage(list_state) = &self.mode {
+            if let Some(selected_home_index) = list_state.selected() {
+                let selected_option = self.image_options[selected_home_index].clone();
+
+                if selected_option == CUSTOM_OCI_IMAGE_OPTION {
+                    // --- NEW: Transition to custom input mode ---
+                    self.value_input = Input::default();
+                    self.mode = AppMode::CustomImageInput;
+                } else {
+                    // --- This is now fixed to use the full path ---
+                    self.set_edited_value(selected_option);
+                }
+            }
+        }
+    }
+
     // --- NEW: Submit logic for the custom home path input ---
     fn submit_home_custom_editing(&mut self) {
+        let new_value = self.value_input.value().to_string();
+        if !new_value.is_empty() {
+            self.set_edited_value(new_value);
+        } else {
+            self.cancel_editing();
+        }
+    }
+
+    fn submit_image_custom_editing(&mut self) {
         let new_value = self.value_input.value().to_string();
         if !new_value.is_empty() {
             self.set_edited_value(new_value);
@@ -471,6 +504,12 @@ impl<'a> App<'a> {
                     home_list_state.select(Some(0));
                     self.mode = AppMode::SelectingHome(home_list_state);
                 }
+                KeyType::Image => {
+                    self.load_image_options();
+                    let mut home_list_state = ListState::default();
+                    home_list_state.select(Some(0));
+                    self.mode = AppMode::SelectingImage(home_list_state);
+                }
                 KeyType::Bool => {
                     self.current_bool_value = true;
                     self.mode = AppMode::AddingBoolValue;
@@ -527,6 +566,7 @@ impl<'a> App<'a> {
         self.current_add_item = None;
         self.value_input = Input::default();
         self.home_dir_options.clear();
+        self.image_options.clear();
     }
 
     fn toggle_bool_value(&mut self) {
@@ -562,7 +602,15 @@ impl<'a> App<'a> {
         options.push(CUSTOM_HOME_PATH_OPTION.to_string());
         self.home_dir_options = options;
     }
-    // Inside impl App<'a>
+    
+    fn load_image_options(&mut self) {
+        let mut options: Vec<String> = DISTROBOX_IMAGES
+            .iter()
+            .map(|&s| s.to_string())
+            .collect();
+        options.push(CUSTOM_OCI_IMAGE_OPTION.to_string());
+        self.image_options = options;
+    }
 
     // Helper to insert the new item
     fn insert_new_property(&mut self, key: String, value: String) {
@@ -599,6 +647,27 @@ impl<'a> App<'a> {
         }
     }
 
+    fn submit_image_add_select(&mut self) {
+        if let AppMode::SelectingImage(list_state) = &self.mode {
+            if let Some(selected_home_index) = list_state.selected() {
+                let selected_option = self.image_options[selected_home_index].clone();
+
+                if selected_option == CUSTOM_OCI_IMAGE_OPTION {
+                    // Transition to custom input mode for adding
+                    self.value_input = Input::default();
+                    self.mode = AppMode::CustomImageInput;
+                } else {
+                    // Insert the selected home path
+                    if let Some(item) = &self.current_add_item {
+                        self.insert_new_property(item.key.to_string(), selected_option);
+                    } else {
+                        self.cancel_adding(); // Should not happen, but cancel if no item context
+                    }
+                }
+            }
+        }
+    }
+
     fn submit_home_add_custom(&mut self) {
         let new_value = self.value_input.value().to_string();
         if !new_value.is_empty() {
@@ -611,6 +680,20 @@ impl<'a> App<'a> {
             self.cancel_adding(); // Cancel if the custom input is empty
         }
     }
+
+    fn submit_image_add_custom(&mut self) {
+        let new_value = self.value_input.value().to_string();
+        if !new_value.is_empty() {
+            if let Some(item) = &self.current_add_item {
+                self.insert_new_property(item.key.to_string(), new_value);
+            } else {
+                self.cancel_adding();
+            }
+        } else {
+            self.cancel_adding(); // Cancel if the custom input is empty
+        }
+    }
+
 }
 
 // --- Main TUI Functions ---
@@ -713,7 +796,6 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                         }
                         _ => {}
                     },
-                    // --- NEW: Handle AddingStringValue ---
                     AppMode::AddingStringValue => {
                         if let Some(item) = &app.current_add_item {
                             // Only handle String and StringList here
@@ -733,8 +815,6 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                             app.cancel_adding();
                         }
                     }
-
-                    // --- NEW: Handle AddingBoolValue ---
                     AppMode::AddingBoolValue => {
                         if let Some(item) = &app.current_add_item {
                             if item.key_type == KeyType::Bool {
@@ -756,7 +836,6 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                             app.cancel_adding();
                         }
                     }
-                    // --- ADDED: Merged state for home selection ---
                     AppMode::SelectingHome(ref mut list_state) => {
                         match key.code {
                             KeyCode::Enter => {
@@ -794,7 +873,35 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                             _ => {}
                         }
                     }
-                    // --- ADDED: Merged state for custom home input ---
+                    AppMode::SelectingImage(ref mut list_state) => {
+                        match key.code {
+                            KeyCode::Enter => {
+                                if app.current_add_item.is_none() {
+                                    app.submit_image_editing(); // CHANGED
+                                } else {
+                                    app.submit_image_add_select(); // CHANGED
+                                }
+                            }
+                            KeyCode::Esc => {
+                                if app.current_add_item.is_none() {
+                                    app.cancel_editing();
+                                } else {
+                                    app.cancel_adding();
+                                }
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                let i = list_state.selected().unwrap_or(0);
+                                let next = if i >= app.image_options.len() - 1 { 0 } else { i + 1 }; // CHANGED
+                                list_state.select(Some(next));
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                let i = list_state.selected().unwrap_or(0);
+                                let prev = if i == 0 { app.image_options.len() - 1 } else { i - 1 }; // CHANGED
+                                list_state.select(Some(prev));
+                            }
+                            _ => {}
+                        }
+                    }
                     AppMode::CustomHomeInput => {
                         match key.code {
                             KeyCode::Enter => {
@@ -814,6 +921,25 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                             _ => {
                                 app.value_input.handle_event(&Event::Key(key));
                             }
+                        }
+                    }
+                    AppMode::CustomImageInput => {
+                         match key.code {
+                            KeyCode::Enter => {
+                                if app.current_add_item.is_none() {
+                                    app.submit_image_custom_editing(); // CHANGED
+                                } else {
+                                    app.submit_image_add_custom(); // CHANGED
+                                }
+                            }
+                            KeyCode::Esc => {
+                                if app.current_add_item.is_none() {
+                                    app.cancel_editing();
+                                } else {
+                                    app.cancel_adding();
+                                }
+                            }
+                            _ => { app.value_input.handle_event(&Event::Key(key)); }
                         }
                     }
                     AppMode::Saved => {}
@@ -884,6 +1010,8 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             " File saved successfully! ".to_string(),
             Style::default().fg(Color::Green),
         ),
+        AppMode::SelectingImage(_) => (" (↑/↓) Select Image | (Enter) Accept | (Esc) Cancel ".to_string(), Style::default()),
+        AppMode::CustomImageInput => (" (Enter) Accept Custom Image | (Esc) Cancel ".to_string(), Style::default()),
     };
 
     let footer_block = Block::default()
@@ -917,6 +1045,21 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         }
         AppMode::CustomHomeInput => {
             draw_edit_home_custom_popup(f, &mut app.value_input, app.current_add_item.is_some());
+        }
+        AppMode::SelectingImage(list_state) => {
+            draw_image_select_popup(
+                f,
+                &app.image_options,
+                app.current_add_item.is_some(),
+                list_state,
+            );
+        }
+        AppMode::CustomImageInput => {
+            draw_image_custom_popup(
+                f,
+                &mut app.value_input,
+                app.current_add_item.is_some(),
+            );
         }
         AppMode::Navigating | AppMode::Saved => {}
     }
@@ -1069,6 +1212,71 @@ fn draw_edit_home_custom_popup<B: Backend>(
 
     f.set_cursor(
         area.x + 1 + (input.visual_cursor().max(scroll) - scroll) as u16, // CHANGED (no app.)
+        area.y + 1,
+    )
+}
+
+fn draw_image_select_popup<B: Backend>(
+    f: &mut Frame<B>,
+    home_dir_options: &Vec<String>,
+    is_adding: bool,
+    list_state: &mut ListState,
+) {
+    let area = centered_rect(80, 80, f.size()); // Made wider
+    f.render_widget(Clear, area);
+
+    let items: Vec<ListItem> = home_dir_options
+        .iter()
+        .map(|opt| {
+            if opt == CUSTOM_OCI_IMAGE_OPTION { // CHANGED
+                ListItem::new(opt.as_str()).style(Style::default().fg(Color::Yellow))
+            } else {
+                ListItem::new(opt.as_str())
+            }
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(
+            if is_adding {
+                " Add Value for: image " // CHANGED
+            } else {
+                " Edit Value for: image " // CHANGED
+            }
+        ))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol(">> ");
+
+    f.render_stateful_widget(list, area, list_state);
+}
+
+// --- ADD THIS (copy of draw_edit_home_custom_popup) ---
+fn draw_image_custom_popup<B: Backend>(
+    f: &mut Frame<B>,
+    input: &mut Input,
+    is_adding: bool,
+) {
+    let area = centered_rect(60, 20, f.size());
+    f.render_widget(Clear, area);
+
+    let title = if is_adding {
+        " Add Custom OCI Image for: image " // CHANGED
+    } else {
+        " Edit Custom OCI Image for: image " // CHANGED
+    };
+    
+    let width = area.width.max(3) - 3;
+    let scroll = input.visual_scroll(width as usize);
+    
+    let input_para = Paragraph::new(input.value())
+        .style(Style::default().fg(Color::Yellow))
+        .scroll((0, scroll as u16))
+        .block(Block::default().borders(Borders::ALL).title(title));
+    
+    f.render_widget(input_para, area);
+
+    f.set_cursor(
+        area.x + 1 + (input.visual_cursor().max(scroll) - scroll) as u16,
         area.y + 1,
     )
 }

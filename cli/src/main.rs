@@ -6,6 +6,7 @@ mod setup;
 mod wizard;
 mod verify;
 mod modify;
+mod constants;
 
 #[derive(Parser)]
 #[command(name = "distromanifesto")]
