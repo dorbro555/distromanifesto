@@ -5,7 +5,6 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use distro_ini::Ini; // Use our aliased crate
 use ratatui::{
     backend::Backend,
     backend::CrosstermBackend,
@@ -18,7 +17,7 @@ use ratatui::{
 use std::{
     collections::HashMap,
     fs,
-    io::{self, Stdout},
+    io::{self},
     path::{Path, PathBuf},
     time::Duration,
 };

@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use inquire::{Confirm, MultiSelect, Select, Text};
-use std::{env, fs, process::Command};
+use std::{fs, process::Command};
 
 /// Entry point for the wizard. This version finds ~/.distromanifesto itself.
 pub fn launch_wizard() -> Result<()> {

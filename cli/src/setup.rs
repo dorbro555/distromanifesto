@@ -24,11 +24,3 @@ pub fn ensure_hidden_dir() -> std::io::Result<PathBuf> {
 
     Ok(dir)
 }
-
-pub fn ensure_manifest_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let mut dir = dirs::home_dir().ok_or("Could not determine home directory")?;
-    dir.push(".distromanifesto");
-    dir.push("manifests");
-    fs::create_dir_all(&dir)?;
-    Ok(dir)
-}
