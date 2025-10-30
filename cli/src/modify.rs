@@ -12,6 +12,7 @@ use ratatui::{
     prelude::*,
     terminal::{Frame, Terminal},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    text::Span,
 };
 use std::{
     collections::HashMap,
@@ -183,7 +184,7 @@ struct App<'a> {
     status_timer: u8,
     schema: Schema,
     home_dir_options: Vec<String>,
-    image_options: Vec<String>,
+    image_options: Vec<(String, String)>,
 }
 
 impl<'a> App<'a> {
@@ -301,7 +302,7 @@ impl<'a> App<'a> {
                         let current_idx = self
                             .image_options
                             .iter()
-                            .position(|h| *h == value_clone);
+                            .position(|(short, full)| *short == value_clone || *full == value_clone);
                         list_state.select(current_idx.or(Some(0)));
                         self.mode = AppMode::SelectingImage(list_state);
                     }
@@ -365,15 +366,15 @@ impl<'a> App<'a> {
     fn submit_image_editing(&mut self) {
         if let AppMode::SelectingImage(list_state) = &self.mode {
             if let Some(selected_home_index) = list_state.selected() {
-                let selected_option = self.image_options[selected_home_index].clone();
+                let (selected_value, _) = self.image_options[selected_home_index].clone();
 
-                if selected_option == CUSTOM_OCI_IMAGE_OPTION {
+                if selected_value == CUSTOM_OCI_IMAGE_OPTION {
                     // --- NEW: Transition to custom input mode ---
                     self.value_input = Input::default();
                     self.mode = AppMode::CustomImageInput;
                 } else {
                     // --- This is now fixed to use the full path ---
-                    self.set_edited_value(selected_option);
+                    self.set_edited_value(selected_value);
                 }
             }
         }
@@ -604,12 +605,14 @@ impl<'a> App<'a> {
     }
     
     fn load_image_options(&mut self) {
-        let mut options: Vec<String> = DISTROBOX_IMAGES
-            .iter()
-            .map(|&s| s.to_string())
-            .collect();
-        options.push(CUSTOM_OCI_IMAGE_OPTION.to_string());
-        self.image_options = options;
+            let mut options: Vec<(String, String)> = DISTROBOX_IMAGES
+                .iter()
+                .map(|(short, full)| (short.to_string(), full.to_string()))
+                .collect();
+                
+            // Add the custom option as a tuple
+            options.push((CUSTOM_OCI_IMAGE_OPTION.to_string(), "".to_string()));
+            self.image_options = options;
     }
 
     // Helper to insert the new item
@@ -650,16 +653,16 @@ impl<'a> App<'a> {
     fn submit_image_add_select(&mut self) {
         if let AppMode::SelectingImage(list_state) = &self.mode {
             if let Some(selected_home_index) = list_state.selected() {
-                let selected_option = self.image_options[selected_home_index].clone();
+                let (selected_value, _) = self.image_options[selected_home_index].clone();
 
-                if selected_option == CUSTOM_OCI_IMAGE_OPTION {
+                if selected_value == CUSTOM_OCI_IMAGE_OPTION {
                     // Transition to custom input mode for adding
                     self.value_input = Input::default();
                     self.mode = AppMode::CustomImageInput;
                 } else {
                     // Insert the selected home path
                     if let Some(item) = &self.current_add_item {
-                        self.insert_new_property(item.key.to_string(), selected_option);
+                        self.insert_new_property(item.key.to_string(), selected_value.clone());
                     } else {
                         self.cancel_adding(); // Should not happen, but cancel if no item context
                     }
@@ -1218,34 +1221,54 @@ fn draw_edit_home_custom_popup<B: Backend>(
 
 fn draw_image_select_popup<B: Backend>(
     f: &mut Frame<B>,
-    home_dir_options: &Vec<String>,
+    image_options: &Vec<(String, String)>, // <-- CHANGED
     is_adding: bool,
     list_state: &mut ListState,
 ) {
-    let area = centered_rect(80, 80, f.size()); // Made wider
+    let area = centered_rect(80, 80, f.size());
     f.render_widget(Clear, area);
 
-    let items: Vec<ListItem> = home_dir_options
+    // Calculate the longest shortname for alignment
+    let max_shortname_len = image_options
         .iter()
-        .map(|opt| {
-            if opt == CUSTOM_OCI_IMAGE_OPTION { // CHANGED
-                ListItem::new(opt.as_str()).style(Style::default().fg(Color::Yellow))
+        .map(|(short, _)| short.len())
+        .max()
+        .unwrap_or(0);
+
+    let items: Vec<ListItem> = image_options
+        .iter()
+        .map(|(short, full)| {
+            if short == CUSTOM_OCI_IMAGE_OPTION {
+                // Style the custom option
+                ListItem::new(short.as_str()).style(Style::default().fg(Color::Yellow))
             } else {
-                ListItem::new(opt.as_str())
+                // Create a two-column layout
+                let padding = " ".repeat(max_shortname_len - short.len() + 2); // +2 for spacing
+                let line = Line::from(vec![
+                    Span::styled(short, Style::default().bold()),
+                    Span::raw(padding),
+                    Span::styled(full, Style::default().fg(Color::DarkGray)),
+                ]);
+                ListItem::new(line)
             }
         })
         .collect();
 
+    let list_title = if is_adding {
+        " Add Value for: image "
+    } else {
+        " Edit Value for: image "
+    };
+
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(
-            if is_adding {
-                " Add Value for: image " // CHANGED
-            } else {
-                " Edit Value for: image " // CHANGED
-            }
-        ))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-        .highlight_symbol(">> ");
+        .block(Block::default().borders(Borders::ALL).title(list_title))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black) // Good contrast
+                .bg(Color::LightGreen)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
 
     f.render_stateful_widget(list, area, list_state);
 }
