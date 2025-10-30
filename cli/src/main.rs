@@ -3,11 +3,11 @@ use clap::{Parser, Subcommand};
 use anyhow::Result;
 
 mod setup;
-mod wizard;
 mod verify;
 mod modify;
 mod constants;
 mod create;
+mod tui;
 
 #[derive(Parser)]
 #[command(name = "distromanifesto")]
@@ -62,7 +62,7 @@ fn main() -> Result<()> {
         }
         None => {
             // Default to the wizard if no subcommand is provided
-            wizard::launch_wizard()?;
+            create::launch_creator()?
         }
     }
 
