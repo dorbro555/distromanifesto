@@ -8,7 +8,7 @@ use crossterm::{
 use distro_ini::Ini; // Use our aliased crate
 use inquire::{
     Text,
-    ui::RenderConfig,
+    ui::{RenderConfig, Styled},
 };
 use dirs::home_dir;
 use ratatui::{
@@ -704,7 +704,8 @@ impl<'a> App<'a> {
 
 pub fn launch_creator() -> Result<()> {
     // 1. Set up the custom render config for inquire
-    let render_config = RenderConfig::default();
+    let render_config = RenderConfig::default()
+        .with_prompt_prefix(Styled::new("🧙 "));
 
     // 2. Prompt for the section name with the new config
     let section_name = Text::new("Enter the name for the first section:")
