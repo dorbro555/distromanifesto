@@ -578,7 +578,7 @@ impl<'a> App<'a> {
                 // --- Logic from load_image_options ---
                 options = DISTROBOX_IMAGES
                     .iter()
-                    .map(|(short, full)| (format!("{short}   ({full})"), short.to_string())) // Display both, save short
+                    .map(|(short, full)| (format!("{short}   ({full})"), full.to_string())) // Display both, save short
                     .collect();
                 // --- End logic ---
             }
