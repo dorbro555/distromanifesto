@@ -26,7 +26,6 @@ use tui_input::Input;
 
 use crate::setup;
 
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum KeyType {
     String,
@@ -894,7 +893,8 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> anyhow::Res
                                 let name = app.value_input.value().to_string();
                                 if !name.is_empty() {
                                     // --- NEW: Validate file path ---
-                                    let path_str = format!("~/.distromanifesto/manifests/{}.ini", name);
+                                    let path_str =
+                                        format!("~/.distromanifesto/manifests/{}.ini", name);
                                     let full_path = setup::get_full_path_from_str(&path_str)?;
 
                                     if full_path.exists() {
@@ -1376,6 +1376,8 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
 
             // --- Draw Popups ---
             match &mut app.mode {
+                AppMode::EditingString => draw_edit_string_popup(f, app),
+                AppMode::EditingBool => draw_edit_bool_popup(f, app),
                 AppMode::AddingStringValue => draw_add_string_value_popup(f, app),
                 AppMode::AddingBoolValue => draw_add_bool_value_popup(f, app),
                 AppMode::SelectingHome(list_state) => {
