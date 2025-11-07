@@ -286,7 +286,9 @@ impl Schema {
 // --- App State ---
 
 enum AppMode {
-    Navigating,
+    WizardStepName,
+    WizardStepImage(ImageSelectorState),
+    EditingFile,
     EditingString,
     EditingBool,
     ConfirmDelete,
@@ -295,7 +297,6 @@ enum AppMode {
     AddingBoolValue,
     SelectingHome(ListState),
     CustomHomeInput,
-    SelectingImage(ImageSelectorState),
     CustomImageInput,
     Saved,
 }
@@ -320,6 +321,8 @@ struct App<'a> {
     schema: Schema,
     home_dir_options: Vec<String>,
     tui_mode: TuiMode,
+    wizard_name_buffer: String,
+    should_quit: bool,
 }
 
 impl<'a> App<'a> {
@@ -339,7 +342,10 @@ impl<'a> App<'a> {
             items: initial_items,
             list_items: Vec::new(),
             state,
-            mode: AppMode::Navigating,
+            mode: match mode {
+                TuiMode::Create => AppMode::WizardStepName,
+                TuiMode::Modify => AppMode::EditingFile,
+            },
             value_input: Input::default(),
             current_section: initial_section,
             current_add_item: None,
@@ -348,6 +354,8 @@ impl<'a> App<'a> {
             schema: Schema::new(),
             home_dir_options: Vec::new(),
             tui_mode: mode,
+            wizard_name_buffer: String::new(),
+            should_quit: false,
         };
         app.refresh_list_items_from_items();
         app
@@ -424,7 +432,7 @@ impl<'a> App<'a> {
                         let state = self.create_image_selector_state();
                         // We don't try to pre-select here, it's too complex.
                         // User can find it.
-                        self.mode = AppMode::SelectingImage(state);
+                        self.mode = AppMode::WizardStepImage(state);
                     }
                     KeyType::String | KeyType::StringList => {
                         self.value_input = Input::new(value_clone);
@@ -436,7 +444,7 @@ impl<'a> App<'a> {
     }
 
     fn cancel_editing(&mut self) {
-        self.mode = AppMode::Navigating;
+        self.mode = AppMode::EditingFile;
         self.value_input = Input::default();
         self.home_dir_options.clear();
     }
@@ -511,7 +519,7 @@ impl<'a> App<'a> {
                 }
             }
         }
-        self.mode = AppMode::Navigating;
+        self.mode = AppMode::EditingFile;
     }
 
     fn start_confirm_delete(&mut self) {
@@ -523,7 +531,7 @@ impl<'a> App<'a> {
     }
 
     fn cancel_delete(&mut self) {
-        self.mode = AppMode::Navigating;
+        self.mode = AppMode::EditingFile;
     }
 
     fn start_adding(&mut self) {
@@ -573,7 +581,7 @@ impl<'a> App<'a> {
                 }
                 KeyType::Image => {
                     let state = self.create_image_selector_state();
-                    self.mode = AppMode::SelectingImage(state);
+                    self.mode = AppMode::WizardStepImage(state);
                 }
                 KeyType::Bool => {
                     self.current_bool_value = true;
@@ -627,7 +635,7 @@ impl<'a> App<'a> {
     }
 
     fn cancel_adding(&mut self) {
-        self.mode = AppMode::Navigating;
+        self.mode = AppMode::EditingFile;
         self.current_add_item = None;
         self.value_input = Input::default();
         self.home_dir_options.clear();
@@ -826,11 +834,11 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                 if app.status_timer > 0 {
                     app.status_timer -= 1;
                 } else {
-                    app.mode = AppMode::Navigating;
+                    app.mode = AppMode::EditingFile;
                 }
                 if let Ok(true) = event::poll(Duration::from_millis(0)) {
                     if let Event::Key(_) = event::read()? {
-                        app.mode = AppMode::Navigating;
+                        app.mode = AppMode::EditingFile;
                         app.status_timer = 0;
                     }
                 }
@@ -839,7 +847,93 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
 
             if let Event::Key(key) = event::read()? {
                 match app.mode {
-                    AppMode::Navigating => match key.code {
+                    // --- NEW WIZARD STEP 1: NAME ---
+                    AppMode::WizardStepName => {
+                        match key.code {
+                            KeyCode::Enter => {
+                                let name = app.value_input.value().to_string();
+                                if !name.is_empty() {
+                                    app.wizard_name_buffer = name;
+                                    app.value_input.reset();
+                                    // Go to next step
+                                    let state = app.create_image_selector_state();
+                                    app.mode = AppMode::WizardStepImage(state);
+                                }
+                            }
+                            KeyCode::Esc => {
+                                app.should_quit = true; // Quit if they cancel step 1
+                            }
+                            _ => {
+                                app.value_input.handle_event(&Event::Key(key));
+                            }
+                        }
+                    }
+
+                    // --- MODIFIED: WIZARD STEP 2 / IMAGE SELECT ---
+                    AppMode::WizardStepImage(ref mut state) => {
+                        match key.code {
+                            KeyCode::Esc => {
+                                // --- Go back to Step 1 if in wizard ---
+                                if app.tui_mode == TuiMode::Create {
+                                    app.value_input.reset();
+                                    app.mode = AppMode::WizardStepName;
+                                } else {
+                                    app.cancel_editing();
+                                }
+                            }
+                            // Tab navigation
+                            KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => state.next_tab(),
+                            KeyCode::Left | KeyCode::Char('h') => state.previous_tab(),
+
+                            // List navigation
+                            KeyCode::Down | KeyCode::Char('j') => state.next(),
+                            KeyCode::Up | KeyCode::Char('k') => state.previous(),
+
+                            // Select/Toggle
+                            KeyCode::Enter => {
+                                let selected_item = state.get_selected_item().cloned();
+                                if let Some(item) = selected_item {
+                                    match item {
+                                        ImageListItem::Group(_) => state.toggle_selected_group(),
+                                        ImageListItem::Image(image) => {
+                                            if image.display_name == CUSTOM_OCI_IMAGE_OPTION {
+                                                app.value_input = Input::default();
+                                                app.mode = AppMode::CustomImageInput;
+                                            } else {
+                                                // --- WIZARD IS DONE, SUBMIT AND MOVE TO EDITOR ---
+                                                if app.tui_mode == TuiMode::Create {
+                                                    // This is the final step
+                                                    let section_name =
+                                                        app.wizard_name_buffer.clone();
+                                                    app.current_section = section_name.clone();
+
+                                                    // Create the initial items
+                                                    app.items = vec![
+                                                        DisplayItem::Section(section_name),
+                                                        DisplayItem::Property(
+                                                            app.current_section.clone(),
+                                                            "image".to_string(),
+                                                            image.full_url.to_string(),
+                                                        ),
+                                                    ];
+                                                    app.refresh_list_items_from_items();
+                                                    app.state.select(Some(1)); // Select the image
+
+                                                    app.mode = AppMode::EditingFile;
+                                                // <-- Drop into editor
+                                                } else {
+                                                    // This is just modify logic
+                                                    app.submit_image_select(image.full_url);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    AppMode::EditingFile => match key.code {
                         KeyCode::Char('q') => return Ok(()),
                         KeyCode::Char('s') => match app.tui_mode {
                             TuiMode::Create => {
@@ -981,53 +1075,13 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                             }
                         }
                     }
-                    AppMode::SelectingImage(ref mut state) => {
-                        match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc => {
-                                if app.tui_mode == TuiMode::Modify {
-                                    app.cancel_editing();
-                                } else {
-                                    app.cancel_adding();
-                                }
-                            }
-                            // Tab navigation
-                            KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => state.next_tab(),
-                            KeyCode::Left | KeyCode::Char('h') => state.previous_tab(),
-
-                            // List navigation
-                            KeyCode::Down | KeyCode::Char('j') => state.next(),
-                            KeyCode::Up | KeyCode::Char('k') => state.previous(),
-
-                            // Select/Toggle
-                            KeyCode::Enter => {
-                                let selected_item = state.get_selected_item().cloned(); // Clone item to break borrow
-                                if let Some(item) = selected_item {
-                                    match item {
-                                        ImageListItem::Group(_) => state.toggle_selected_group(),
-                                        ImageListItem::Image(image) => {
-                                            if image.display_name == CUSTOM_OCI_IMAGE_OPTION {
-                                                app.value_input = Input::default();
-                                                app.mode = AppMode::CustomImageInput;
-                                            } else {
-                                                // We call submit *after* state is no longer borrowed
-                                                app.submit_image_select(image.full_url);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
                     AppMode::CustomImageInput => {
                         match key.code {
                             KeyCode::Enter => app.submit_image_custom(), // <-- Image
                             KeyCode::Esc => {
-                                if app.tui_mode == TuiMode::Modify {
-                                    app.cancel_editing();
-                                } else {
-                                    app.cancel_adding();
-                                }
+                                // Go back to the image selector
+                                let state = app.create_image_selector_state();
+                                app.mode = AppMode::WizardStepImage(state);
                             }
                             _ => {
                                 app.value_input.handle_event(&Event::Key(key));
@@ -1044,148 +1098,161 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
 // --- UI Drawing Functions ---
 
 fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
-    let size = f.size();
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(0),
-            Constraint::Length(3),
-        ])
-        .split(size);
-
-    let title_block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Distromanifesto Editor ");
-    f.render_widget(title_block, chunks[0]);
-
-    let (footer_text, footer_style) = match &app.mode {
-        AppMode::Navigating => match app.tui_mode {
-            TuiMode::Modify => (
-                " (q) Quit | (s) Save | (↑/↓) Nav | (a) Add | (d) Delete | (Enter) Edit "
-                    .to_string(),
-                Style::default(),
-            ),
-            TuiMode::Create => {
-                let has_image = app.has_required_keys();
-                let save_text = if has_image { " (s) Save |" } else { "" };
-                let footer_text =
-                    format!(" (q) Quit |{save_text} (a) Add Key | (d) Delete Key | (Enter) Edit ");
-                let footer_style = if !has_image {
-                    Style::default().fg(Color::Yellow)
-                } else {
-                    Style::default()
-                };
-                let title_text = if !has_image {
-                    format!("{footer_text} [WARNING: 'image' key is required]")
-                } else {
-                    footer_text
-                };
-                (title_text, footer_style)
-            }
-        },
-        AppMode::EditingString => (
-            " (Enter) Accept | (Esc) Cancel ".to_string(),
-            Style::default(),
-        ),
-        AppMode::EditingBool => (
-            " (Space/←/→) Toggle | (Enter) Accept | (Esc) Cancel ".to_string(),
-            Style::default(),
-        ),
-        AppMode::ConfirmDelete => (
-            " Delete selected item? (y/n) ".to_string(),
-            Style::default().fg(Color::Red),
-        ),
-        AppMode::AddingKey(_) => (
-            " (↑/↓) Select | (Enter) Next | (Esc) Cancel ".to_string(),
-            Style::default().fg(Color::Cyan), // Keep the title cyan
-        ),
-        AppMode::AddingStringValue => (
-            " (Enter) Accept | (Esc) Cancel ".to_string(),
-            Style::default(),
-        ),
-        AppMode::AddingBoolValue => (
-            " (Space/←/→) Toggle | (Enter) Accept | (Esc) Cancel ".to_string(),
-            Style::default(),
-        ),
-        AppMode::SelectingHome(_) => (
-            " (↑/↓) Select | (Enter) Accept | (Esc) Cancel ".to_string(),
-            Style::default(),
-        ),
-        AppMode::CustomHomeInput => (
-            " (Enter) Accept Custom Value | (Esc) Cancel ".to_string(),
-            Style::default(),
-        ),
-        AppMode::SelectingImage(_) => (
-            " (↑/↓) Nav | (←/→/Tab) Switch Tab | (Enter) Select/Toggle | (Esc) Cancel ".to_string(),
-            Style::default(),
-        ),
-        AppMode::CustomImageInput => (
-            " (Enter) Accept Custom Image | (Esc) Cancel ".to_string(),
-            Style::default(),
-        ),
-        AppMode::Saved => (
-            " File saved successfully! ".to_string(),
-            Style::default().fg(Color::Green),
-        ),
-    };
-
-    let footer_block = Block::default()
-        .borders(Borders::ALL)
-        .title(footer_text)
-        .title_style(footer_style)
-        .border_style(footer_style);
-    f.render_widget(footer_block, chunks[2]);
-    if let AppMode::AddingKey(list_state) = &app.mode {
-        // Create a temporary block *identic* to the footer_block
-        // just to calculate its inner area.
-        let block_for_inner = Block::default().borders(Borders::ALL);
-        let inner_footer_area = block_for_inner.inner(chunks[2]);
-
-        let description = list_state.selected().map_or("".to_string(), |index| {
-            SCHEMA
-                .get(index)
-                .map_or("".to_string(), |item| item.description.to_string())
-        });
-        let text = format!("[Hint: {description}]");
-
-        let hint_para = Paragraph::new(text)
-            .style(Style::default().fg(Color::Cyan))
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: true }); // Wrap in case description is too long
-
-        // Render the hint inside the footer area
-        f.render_widget(hint_para, inner_footer_area);
-    }
-
-    let list = List::new(app.list_items.clone())
-        .block(Block::default().title("Manifest").borders(Borders::ALL))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-        .highlight_symbol(">> ");
-
-    f.render_stateful_widget(list, chunks[1], &mut app.state);
-
+    // Top-level match to decide WHAT to draw
     match &mut app.mode {
-        AppMode::EditingString => draw_edit_string_popup(f, app),
-        AppMode::EditingBool => draw_edit_bool_popup(f, app),
-        AppMode::ConfirmDelete => draw_delete_popup(f),
-        AppMode::AddingKey(list_state) => draw_add_key_popup(f, list_state),
-        AppMode::AddingStringValue => draw_add_string_value_popup(f, app), // Use specific draw function
-        AppMode::AddingBoolValue => draw_add_bool_value_popup(f, app), // Use specific draw function
-        AppMode::SelectingHome(list_state) => {
-            draw_home_select_popup(f, app.tui_mode, &app.home_dir_options, list_state);
-        }
-        AppMode::SelectingImage(state) => {
-            draw_image_select_popup(f, app.tui_mode, state);
-        }
-        AppMode::CustomHomeInput => {
-            draw_home_custom_popup(f, app);
+        AppMode::WizardStepName => draw_wizard_name_step(f, app),
+        AppMode::WizardStepImage(state) => {
+            // Draw *only* the image selector, fullscreen
+            draw_image_select_popup(f, app.tui_mode, state, f.size());
         }
         AppMode::CustomImageInput => {
+            // Draw the custom input, but also the image selector *behind* it
+            draw_image_select_popup(
+                f,
+                app.tui_mode,
+                &mut app.create_image_selector_state(),
+                f.size(),
+            );
             draw_image_custom_popup(f, app);
         }
-        AppMode::Navigating | AppMode::Saved => {}
+        AppMode::EditingFile
+        | AppMode::EditingString
+        | AppMode::EditingBool
+        | AppMode::SelectingHome(_)
+        | AppMode::CustomHomeInput
+        | AppMode::AddingKey(_)
+        | AppMode::AddingStringValue
+        | AppMode::AddingBoolValue
+        | AppMode::ConfirmDelete
+        | AppMode::Saved => {
+            // --- This is our ENTIRE old ui function ---
+            let size = f.size();
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Min(0),
+                    Constraint::Length(3),
+                ])
+                .split(size);
+
+            let title_block = Block::default()
+                .borders(Borders::ALL)
+                .title(" Distromanifesto Editor ");
+            f.render_widget(title_block, chunks[0]);
+
+            // --- Footer Logic ---
+            let (footer_text, footer_style) = match &app.mode {
+                AppMode::EditingFile => match app.tui_mode {
+                    TuiMode::Modify => (
+                        " (q) Quit | (s) Save | (↑/↓) Nav | (a) Add | (d) Delete | (Enter) Edit "
+                            .to_string(),
+                        Style::default(),
+                    ),
+                    TuiMode::Create => {
+                        let has_image = app.has_required_keys();
+                        let save_text = if has_image { " (s) Save |" } else { "" };
+                        let footer_text = format!(
+                            " (q) Quit |{save_text} (a) Add Key | (d) Delete Key | (Enter) Edit "
+                        );
+                        let footer_style = if !has_image {
+                            Style::default().fg(Color::Yellow)
+                        } else {
+                            Style::default()
+                        };
+                        let title_text = if !has_image {
+                            format!("{footer_text} [WARNING: 'image' key is required]")
+                        } else {
+                            footer_text
+                        };
+                        (title_text, footer_style)
+                    }
+                },
+                AppMode::EditingString => (" (Enter) Accept | (Esc) Cancel ".to_string(), Style::default()),
+                AppMode::EditingBool => (" (Space/←/→) Toggle | (Enter) Accept | (Esc) Cancel ".to_string(), Style::default()),
+                AppMode::AddingKey(list_state) => (
+                    " (↑/↓) Select | (Enter) Next | (Esc) Cancel ".to_string(),
+                    Style::default().fg(Color::Cyan),
+                ),
+                // ... all other AppMode footer lines
+                AppMode::AddingStringValue => (
+                    " (Enter) Accept | (Esc) Cancel ".to_string(),
+                    Style::default(),
+                ),
+                AppMode::AddingBoolValue => (
+                    " (Space/←/→) Toggle | (Enter) Accept | (Esc) Cancel ".to_string(),
+                    Style::default(),
+                ),
+                AppMode::SelectingHome(_) => (
+                    " (↑/↓) Select | (Enter) Accept | (Esc) Cancel ".to_string(),
+                    Style::default(),
+                ),
+                AppMode::CustomHomeInput => (
+                    " (Enter) Accept Custom Value | (Esc) Cancel ".to_string(),
+                    Style::default(),
+                ),
+                AppMode::CustomImageInput => (
+                    " (Enter) Accept Custom Image | (Esc) Cancel ".to_string(),
+                    Style::default(),
+                ),
+                AppMode::ConfirmDelete => (
+                    " Delete selected item? (y/n) ".to_string(),
+                    Style::default().fg(Color::Red),
+                ),
+                AppMode::Saved => (
+                    " File saved successfully! ".to_string(),
+                    Style::default().fg(Color::Green),
+                ),
+                AppMode::WizardStepName | AppMode::WizardStepImage(_) => {
+                    (String::new(), Style::default())
+                } // Should not be reached
+            };
+
+            let footer_block = Block::default()
+                .borders(Borders::ALL)
+                .title(footer_text)
+                .title_style(footer_style)
+                .border_style(footer_style);
+            f.render_widget(footer_block, chunks[2]);
+
+            if let AppMode::AddingKey(list_state) = &app.mode {
+                let block_for_inner = Block::default().borders(Borders::ALL);
+                let inner_footer_area = block_for_inner.inner(chunks[2]);
+                let description = list_state.selected().map_or("".to_string(), |index| {
+                    SCHEMA
+                        .get(index)
+                        .map_or("".to_string(), |item| item.description.to_string())
+                });
+                let text = format!("[Hint: {description}]");
+                let hint_para = Paragraph::new(text)
+                    .style(Style::default().fg(Color::Cyan))
+                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: true });
+                f.render_widget(hint_para, inner_footer_area);
+            }
+            // --- End Footer Logic ---
+
+            let list = List::new(app.list_items.clone())
+                .block(Block::default().title("Manifest").borders(Borders::ALL))
+                .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+                .highlight_symbol(">> ");
+            f.render_stateful_widget(list, chunks[1], &mut app.state);
+
+            // --- Draw Popups ---
+            match &mut app.mode {
+                AppMode::AddingStringValue => draw_add_string_value_popup(f, app),
+                AppMode::AddingBoolValue => draw_add_bool_value_popup(f, app),
+                AppMode::SelectingHome(list_state) => {
+                    draw_home_select_popup(f, app.tui_mode, &app.home_dir_options, list_state);
+                }
+                AppMode::CustomHomeInput => {
+                    draw_home_custom_popup(f, app);
+                }
+                AppMode::ConfirmDelete => draw_delete_popup(f),
+                AppMode::AddingKey(list_state) => draw_add_key_popup(f, list_state),
+                _ => {} // All other states are handled by the main editor view
+            }
+        }
     }
 }
 
@@ -1340,8 +1407,8 @@ fn draw_image_select_popup<B: Backend>(
     f: &mut Frame<B>,
     app_tui_mode: TuiMode,
     state: &mut ImageSelectorState,
+    area: Rect,
 ) {
-    let area = centered_rect(80, 80, f.size());
     f.render_widget(Clear, area); // Clear first
 
     // Title
@@ -1448,6 +1515,42 @@ fn draw_image_custom_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         area.x + 1 + (app.value_input.visual_cursor().max(scroll) - scroll) as u16,
         area.y + 1,
     )
+}
+
+fn draw_wizard_name_step<B: Backend>(f: &mut Frame<B>, app: &mut App) {
+    let area = f.size();
+
+    // Create a 50% width, 3-line high centered block for the input
+    let popup_area = centered_rect(50, 15, area); // 50% width, 15% height
+
+    let title = " Welcome! Enter a name for your new manifest: ";
+
+    let width = popup_area.width.max(3) - 3;
+    let scroll = app.value_input.visual_scroll(width as usize);
+
+    let input = Paragraph::new(app.value_input.value())
+        .style(Style::default().fg(Color::Yellow))
+        .scroll((0, scroll as u16))
+        .block(Block::default().borders(Borders::ALL).title(title));
+
+    f.render_widget(Clear, popup_area); // Clear area before drawing
+    f.render_widget(input, popup_area);
+
+    // Set cursor
+    f.set_cursor(
+        popup_area.x + 1 + (app.value_input.visual_cursor().max(scroll) - scroll) as u16,
+        popup_area.y + 1,
+    );
+
+    // --- Footer for this step ---
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(3)])
+        .split(area);
+
+    let footer_text = " (Enter) Accept | (Esc) Quit ";
+    let footer_block = Block::default().borders(Borders::ALL).title(footer_text);
+    f.render_widget(footer_block, chunks[1]);
 }
 
 fn draw_delete_popup<B: Backend>(f: &mut Frame<B>) {
