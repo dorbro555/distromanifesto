@@ -1,4 +1,4 @@
-use crate::constants::{CUSTOM_OCI_IMAGE_OPTION, DISTROBOX_IMAGES};
+use crate::constants::{CUSTOM_OCI_IMAGE_OPTION, DISTROBOX_IMAGE_DATA};
 use anyhow::{anyhow, Result};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
@@ -11,10 +11,11 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     prelude::*,
     terminal::{Frame, Terminal},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap},
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     io::{self},
     path::{Path, PathBuf},
@@ -44,6 +45,110 @@ struct SchemaItem {
     key: &'static str,
     key_type: KeyType,
     description: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ImageListItem {
+    Group(&'static crate::constants::ImageGroup),
+    Image(&'static crate::constants::ImageItem),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ImageSelectorState {
+    tab_index: usize,
+    list_state: ListState,
+    expanded_groups: HashSet<&'static str>,
+    items: Vec<ImageListItem>,
+}
+
+// In cli/tui.rs
+
+impl ImageSelectorState {
+    // Rebuilds the flat list of items based on tab and expanded groups
+    fn rebuild_items(&mut self) {
+        self.items.clear();
+        let tab_data = &DISTROBOX_IMAGE_DATA[self.tab_index];
+
+        for group in tab_data.groups {
+            self.items.push(ImageListItem::Group(group));
+
+            // If the group is expanded, add its children
+            if self.expanded_groups.contains(group.name) {
+                for image in group.images {
+                    self.items.push(ImageListItem::Image(image));
+                }
+            }
+        }
+    }
+
+    // Move selection down
+    fn next(&mut self) {
+        let i = match self.list_state.selected() {
+            Some(i) => {
+                if i >= self.items.len() - 1 {
+                    0
+                } else {
+                    i + 1
+                }
+            }
+            None => 0,
+        };
+        self.list_state.select(Some(i));
+    }
+
+    // Move selection up
+    fn previous(&mut self) {
+        let i = match self.list_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.items.len() - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.list_state.select(Some(i));
+    }
+
+    // Go to next tab
+    fn next_tab(&mut self) {
+        self.tab_index = (self.tab_index + 1) % DISTROBOX_IMAGE_DATA.len();
+        self.rebuild_items();
+        self.list_state.select(Some(0)); // Reset selection
+    }
+
+    // Go to previous tab
+    fn previous_tab(&mut self) {
+        self.tab_index = if self.tab_index == 0 {
+            DISTROBOX_IMAGE_DATA.len() - 1
+        } else {
+            self.tab_index - 1
+        };
+        self.rebuild_items();
+        self.list_state.select(Some(0)); // Reset selection
+    }
+
+    // Toggle the currently selected group
+    fn toggle_selected_group(&mut self) {
+        if let Some(index) = self.list_state.selected() {
+            if let ImageListItem::Group(group) = self.items[index] {
+                if self.expanded_groups.contains(group.name) {
+                    self.expanded_groups.remove(group.name);
+                } else {
+                    self.expanded_groups.insert(group.name);
+                }
+                self.rebuild_items();
+                // Try to keep the same item selected
+                self.list_state.select(Some(index));
+            }
+        }
+    }
+
+    // Get the currently selected item
+    fn get_selected_item(&self) -> Option<&ImageListItem> {
+        self.list_state.selected().and_then(|i| self.items.get(i))
+    }
 }
 
 const SCHEMA: &[SchemaItem] = &[
@@ -188,8 +293,10 @@ enum AppMode {
     AddingKey(ListState),
     AddingStringValue,
     AddingBoolValue,
-    SelectingFromList(ListState),
-    CustomListInput,
+    SelectingHome(ListState),
+    CustomHomeInput,
+    SelectingImage(ImageSelectorState),
+    CustomImageInput,
     Saved,
 }
 
@@ -211,8 +318,7 @@ struct App<'a> {
     current_bool_value: bool,
     status_timer: u8,
     schema: Schema,
-    list_selector_options: Vec<(String, String)>, // (value_to_display, value_to_save)
-    current_list_selector: Option<SelectorType>,
+    home_dir_options: Vec<String>,
     tui_mode: TuiMode,
 }
 
@@ -240,8 +346,7 @@ impl<'a> App<'a> {
             current_bool_value: true,
             status_timer: 0,
             schema: Schema::new(),
-            list_selector_options: Vec::new(),
-            current_list_selector: None,
+            home_dir_options: Vec::new(),
             tui_mode: mode,
         };
         app.refresh_list_items_from_items();
@@ -306,24 +411,20 @@ impl<'a> App<'a> {
                         self.mode = AppMode::EditingBool;
                     }
                     KeyType::HomeDir => {
-                        self.load_list_options(SelectorType::Home);
+                        self.load_home_dir_options();
                         let mut list_state = ListState::default();
                         let current_idx = self
-                            .list_selector_options
+                            .home_dir_options
                             .iter()
-                            .position(|(_, save_val)| *save_val == value_clone);
+                            .position(|save_val| *save_val == value_clone);
                         list_state.select(current_idx.or(Some(0)));
-                        self.mode = AppMode::SelectingFromList(list_state);
+                        self.mode = AppMode::SelectingHome(list_state);
                     }
                     KeyType::Image => {
-                        self.load_list_options(SelectorType::Image);
-                        let mut list_state = ListState::default();
-                        let current_idx = self
-                            .list_selector_options
-                            .iter()
-                            .position(|(_, save_val)| *save_val == value_clone);
-                        list_state.select(current_idx.or(Some(0)));
-                        self.mode = AppMode::SelectingFromList(list_state);
+                        let state = self.create_image_selector_state();
+                        // We don't try to pre-select here, it's too complex.
+                        // User can find it.
+                        self.mode = AppMode::SelectingImage(state);
                     }
                     KeyType::String | KeyType::StringList => {
                         self.value_input = Input::new(value_clone);
@@ -337,8 +438,7 @@ impl<'a> App<'a> {
     fn cancel_editing(&mut self) {
         self.mode = AppMode::Navigating;
         self.value_input = Input::default();
-        self.list_selector_options.clear();
-        self.current_list_selector = None;
+        self.home_dir_options.clear();
     }
 
     // --- NEW: Helper function to apply the edit ---
@@ -466,16 +566,14 @@ impl<'a> App<'a> {
                     self.mode = AppMode::AddingStringValue;
                 }
                 KeyType::HomeDir => {
-                    self.load_list_options(SelectorType::Home);
+                    self.load_home_dir_options();
                     let mut list_state = ListState::default();
                     list_state.select(Some(0));
-                    self.mode = AppMode::SelectingFromList(list_state);
+                    self.mode = AppMode::SelectingHome(list_state);
                 }
                 KeyType::Image => {
-                    self.load_list_options(SelectorType::Image);
-                    let mut list_state = ListState::default();
-                    list_state.select(Some(0));
-                    self.mode = AppMode::SelectingFromList(list_state);
+                    let state = self.create_image_selector_state();
+                    self.mode = AppMode::SelectingImage(state);
                 }
                 KeyType::Bool => {
                     self.current_bool_value = true;
@@ -532,66 +630,50 @@ impl<'a> App<'a> {
         self.mode = AppMode::Navigating;
         self.current_add_item = None;
         self.value_input = Input::default();
-        self.list_selector_options.clear();
-        self.current_list_selector = None;
+        self.home_dir_options.clear();
     }
 
     fn toggle_bool_value(&mut self) {
         self.current_bool_value = !self.current_bool_value;
     }
 
-    fn load_list_options(&mut self, selector_type: SelectorType) {
-        let mut options: Vec<(String, String)> = Vec::new();
-        let custom_option_label: &str;
+    fn load_home_dir_options(&mut self) {
+        let mut options = vec!["host".to_string(), "none".to_string()];
 
-        match selector_type {
-            SelectorType::Home => {
-                custom_option_label = CUSTOM_HOME_PATH_OPTION;
-                // --- Logic from load_home_dir_options ---
-                options.push(("host".to_string(), "host".to_string()));
-                options.push(("none".to_string(), "none".to_string()));
-                if let Ok(homes_path) = dirs::home_dir()
-                    .ok_or_else(|| anyhow!("Could not find home directory"))
-                    .map(|mut p| {
-                        p.push(".distromanifesto/homes");
-                        p
-                    })
-                {
-                    if let Ok(entries) = fs::read_dir(homes_path) {
-                        for entry in entries.flatten() {
-                            if entry.path().is_dir() {
-                                if let Some(dir_name) = entry.path().file_name() {
-                                    let path_str = format!(
-                                        "~/.distromanifesto/homes/{}",
-                                        dir_name.to_string_lossy()
-                                    );
-                                    options.push((path_str.clone(), path_str));
-                                }
-                            }
+        if let Ok(homes_path) = dirs::home_dir()
+            .ok_or_else(|| anyhow!("Could not find home directory"))
+            .map(|mut p| {
+                p.push(".distromanifesto/homes");
+                p
+            })
+        {
+            if let Ok(entries) = fs::read_dir(homes_path) {
+                for entry in entries.flatten() {
+                    if entry.path().is_dir() {
+                        if let Some(dir_name) = entry.path().file_name() {
+                            let path_str =
+                                format!("~/.distromanifesto/homes/{}", dir_name.to_string_lossy());
+                            options.push(path_str);
                         }
                     }
                 }
-                // --- End logic ---
-            }
-            SelectorType::Image => {
-                custom_option_label = CUSTOM_OCI_IMAGE_OPTION;
-                // --- Logic from load_image_options ---
-                options = DISTROBOX_IMAGES
-                    .iter()
-                    .map(|(short, full)| (format!("{short}   ({full})"), full.to_string())) // Display both, save short
-                    .collect();
-                // --- End logic ---
             }
         }
 
-        // Add the custom option
-        options.push((
-            custom_option_label.to_string(),
-            custom_option_label.to_string(),
-        ));
+        options.push(CUSTOM_HOME_PATH_OPTION.to_string());
+        self.home_dir_options = options;
+    }
 
-        self.list_selector_options = options;
-        self.current_list_selector = Some(selector_type);
+    fn create_image_selector_state(&self) -> ImageSelectorState {
+        let mut state = ImageSelectorState {
+            tab_index: 0,
+            list_state: ListState::default(),
+            expanded_groups: HashSet::new(),
+            items: Vec::new(),
+        };
+        state.rebuild_items(); // Build initial items for tab 0
+        state.list_state.select(Some(0)); // Select first item
+        state
     }
 
     // Helper to insert the new item
@@ -608,27 +690,23 @@ impl<'a> App<'a> {
         self.cancel_adding();
     }
 
-    fn submit_list_select(&mut self) {
-        if let AppMode::SelectingFromList(list_state) = &self.mode {
+    fn submit_home_select(&mut self) {
+        if let AppMode::SelectingHome(list_state) = &self.mode {
             if let Some(selected_index) = list_state.selected() {
-                let (display_val, save_val) = self.list_selector_options[selected_index].clone();
+                let selected_option = self.home_dir_options[selected_index].clone();
 
-                let is_custom = match self.current_list_selector {
-                    Some(SelectorType::Home) => display_val == CUSTOM_HOME_PATH_OPTION,
-                    Some(SelectorType::Image) => display_val == CUSTOM_OCI_IMAGE_OPTION,
-                    None => false,
-                };
+                let is_custom = selected_option == CUSTOM_HOME_PATH_OPTION;
 
                 if is_custom {
                     self.value_input = Input::default();
-                    self.mode = AppMode::CustomListInput;
+                    self.mode = AppMode::CustomHomeInput;
                 } else {
                     // Not custom, so we save the value
                     if self.tui_mode == TuiMode::Modify {
-                        self.set_edited_value(save_val);
+                        self.set_edited_value(selected_option);
                     } else {
                         if let Some(item) = &self.current_add_item {
-                            self.insert_new_property(item.key.to_string(), save_val);
+                            self.insert_new_property(item.key.to_string(), selected_option);
                         } else {
                             self.cancel_adding();
                         }
@@ -638,7 +716,7 @@ impl<'a> App<'a> {
         }
     }
 
-    fn submit_list_custom(&mut self) {
+    fn submit_home_custom(&mut self) {
         let new_value = self.value_input.value().to_string();
         if !new_value.is_empty() {
             if self.tui_mode == TuiMode::Modify {
@@ -663,6 +741,41 @@ impl<'a> App<'a> {
         self.items
             .iter()
             .any(|item| matches!(item, DisplayItem::Property(_, key, _) if key == "image"))
+    }
+
+    // --- NEW: Submit logic for custom image input ---
+    fn submit_image_custom(&mut self) {
+        let new_value = self.value_input.value().to_string();
+        if !new_value.is_empty() {
+            if self.tui_mode == TuiMode::Modify {
+                self.set_edited_value(new_value);
+            } else {
+                if let Some(item) = &self.current_add_item {
+                    self.insert_new_property(item.key.to_string(), new_value);
+                } else {
+                    self.cancel_adding();
+                }
+            }
+        } else {
+            if self.tui_mode == TuiMode::Modify {
+                self.cancel_editing();
+            } else {
+                self.cancel_adding();
+            }
+        }
+    }
+
+    // --- NEW: Submit logic for image (called from run_app) ---
+    fn submit_image_select(&mut self, full_url: &'static str) {
+        if self.tui_mode == TuiMode::Modify {
+            self.set_edited_value(full_url.to_string());
+        } else {
+            if let Some(item) = &self.current_add_item {
+                self.insert_new_property(item.key.to_string(), full_url.to_string());
+            } else {
+                self.cancel_adding();
+            }
+        }
     }
 }
 
@@ -822,9 +935,9 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                             app.cancel_adding();
                         }
                     }
-                    AppMode::SelectingFromList(ref mut list_state) => {
+                    AppMode::SelectingHome(ref mut list_state) => {
                         match key.code {
-                            KeyCode::Enter => app.submit_list_select(), // <-- Use generic
+                            KeyCode::Enter => app.submit_home_select(), // <-- Home
                             KeyCode::Esc => {
                                 if app.tui_mode == TuiMode::Modify {
                                     app.cancel_editing();
@@ -834,28 +947,81 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
                                 let i = list_state.selected().unwrap_or(0);
-                                let next = if i >= app.list_selector_options.len() - 1 {
+                                let next = if i >= app.home_dir_options.len() - 1 {
                                     0
                                 } else {
                                     i + 1
-                                };
+                                }; // <-- Home
                                 list_state.select(Some(next));
                             }
                             KeyCode::Up | KeyCode::Char('k') => {
                                 let i = list_state.selected().unwrap_or(0);
                                 let prev = if i == 0 {
-                                    app.list_selector_options.len() - 1
+                                    app.home_dir_options.len() - 1
                                 } else {
                                     i - 1
-                                };
+                                }; // <-- Home
                                 list_state.select(Some(prev));
                             }
                             _ => {}
                         }
                     }
-                    AppMode::CustomListInput => {
+                    AppMode::CustomHomeInput => {
                         match key.code {
-                            KeyCode::Enter => app.submit_list_custom(), // <-- Use generic
+                            KeyCode::Enter => app.submit_home_custom(), // <-- Home
+                            KeyCode::Esc => {
+                                if app.tui_mode == TuiMode::Modify {
+                                    app.cancel_editing();
+                                } else {
+                                    app.cancel_adding();
+                                }
+                            }
+                            _ => {
+                                app.value_input.handle_event(&Event::Key(key));
+                            }
+                        }
+                    }
+                    AppMode::SelectingImage(ref mut state) => {
+                        match key.code {
+                            KeyCode::Char('q') | KeyCode::Esc => {
+                                if app.tui_mode == TuiMode::Modify {
+                                    app.cancel_editing();
+                                } else {
+                                    app.cancel_adding();
+                                }
+                            }
+                            // Tab navigation
+                            KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => state.next_tab(),
+                            KeyCode::Left | KeyCode::Char('h') => state.previous_tab(),
+
+                            // List navigation
+                            KeyCode::Down | KeyCode::Char('j') => state.next(),
+                            KeyCode::Up | KeyCode::Char('k') => state.previous(),
+
+                            // Select/Toggle
+                            KeyCode::Enter => {
+                                let selected_item = state.get_selected_item().cloned(); // Clone item to break borrow
+                                if let Some(item) = selected_item {
+                                    match item {
+                                        ImageListItem::Group(_) => state.toggle_selected_group(),
+                                        ImageListItem::Image(image) => {
+                                            if image.display_name == CUSTOM_OCI_IMAGE_OPTION {
+                                                app.value_input = Input::default();
+                                                app.mode = AppMode::CustomImageInput;
+                                            } else {
+                                                // We call submit *after* state is no longer borrowed
+                                                app.submit_image_select(image.full_url);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    AppMode::CustomImageInput => {
+                        match key.code {
+                            KeyCode::Enter => app.submit_image_custom(), // <-- Image
                             KeyCode::Esc => {
                                 if app.tui_mode == TuiMode::Modify {
                                     app.cancel_editing();
@@ -943,12 +1109,20 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             " (Space/←/→) Toggle | (Enter) Accept | (Esc) Cancel ".to_string(),
             Style::default(),
         ),
-        AppMode::SelectingFromList(_) => (
+        AppMode::SelectingHome(_) => (
             " (↑/↓) Select | (Enter) Accept | (Esc) Cancel ".to_string(),
             Style::default(),
         ),
-        AppMode::CustomListInput => (
+        AppMode::CustomHomeInput => (
             " (Enter) Accept Custom Value | (Esc) Cancel ".to_string(),
+            Style::default(),
+        ),
+        AppMode::SelectingImage(_) => (
+            " (↑/↓) Nav | (←/→/Tab) Switch Tab | (Enter) Select/Toggle | (Esc) Cancel ".to_string(),
+            Style::default(),
+        ),
+        AppMode::CustomImageInput => (
+            " (Enter) Accept Custom Image | (Esc) Cancel ".to_string(),
             Style::default(),
         ),
         AppMode::Saved => (
@@ -999,22 +1173,17 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         AppMode::AddingKey(list_state) => draw_add_key_popup(f, list_state),
         AppMode::AddingStringValue => draw_add_string_value_popup(f, app), // Use specific draw function
         AppMode::AddingBoolValue => draw_add_bool_value_popup(f, app), // Use specific draw function
-        AppMode::SelectingFromList(list_state) => {
-            draw_list_select_popup(
-                f,
-                app.tui_mode,
-                &app.current_list_selector,
-                &app.list_selector_options,
-                list_state,
-            );
+        AppMode::SelectingHome(list_state) => {
+            draw_home_select_popup(f, app.tui_mode, &app.home_dir_options, list_state);
         }
-        AppMode::CustomListInput => {
-            draw_list_custom_popup(
-                f,
-                app.tui_mode,
-                &app.current_list_selector,
-                &mut app.value_input,
-            );
+        AppMode::SelectingImage(state) => {
+            draw_image_select_popup(f, app.tui_mode, state);
+        }
+        AppMode::CustomHomeInput => {
+            draw_home_custom_popup(f, app);
+        }
+        AppMode::CustomImageInput => {
+            draw_image_custom_popup(f, app);
         }
         AppMode::Navigating | AppMode::Saved => {}
     }
@@ -1102,35 +1271,28 @@ fn draw_edit_bool_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     draw_bool_toggle(f, area, title, app.current_bool_value);
 }
 
-fn draw_list_select_popup<B: Backend>(
+fn draw_home_select_popup<B: Backend>(
     f: &mut Frame<B>,
-    app_tui_mode: TuiMode,                         // <-- ADDED
-    current_list_selector: &Option<SelectorType>,  // <-- ADDED
-    list_selector_options: &Vec<(String, String)>, // <-- ADDED
+    app_tui_mode: TuiMode,
+    home_dir_options: &Vec<String>,
     list_state: &mut ListState,
 ) {
-    let (title, custom_option_label) = match *current_list_selector {
-        Some(SelectorType::Home) => (" Home ", CUSTOM_HOME_PATH_OPTION),
-        Some(SelectorType::Image) => (" Image ", CUSTOM_OCI_IMAGE_OPTION),
-        None => (" Select ", ""), // Should not happen
-    };
-
     let title = if app_tui_mode == TuiMode::Modify {
-        format!(" Edit Value:{title}")
+        " Edit Value: Home "
     } else {
-        format!(" Add Value:{title}")
+        " Add Value: Home "
     };
 
-    let area = centered_rect(80, 80, f.size());
+    let area = centered_rect(60, 50, f.size());
     f.render_widget(Clear, area);
 
-    let items: Vec<ListItem> = list_selector_options
+    let items: Vec<ListItem> = home_dir_options
         .iter()
-        .map(|(display_val, _)| {
-            if display_val == custom_option_label {
-                ListItem::new(display_val.as_str()).style(Style::default().fg(Color::Yellow))
+        .map(|opt| {
+            if opt == CUSTOM_HOME_PATH_OPTION {
+                ListItem::new(opt.as_str()).style(Style::default().fg(Color::Yellow))
             } else {
-                ListItem::new(display_val.as_str())
+                ListItem::new(opt.as_str())
             }
         })
         .collect();
@@ -1148,31 +1310,21 @@ fn draw_list_select_popup<B: Backend>(
     f.render_stateful_widget(list, area, list_state);
 }
 
-fn draw_list_custom_popup<B: Backend>(
-    f: &mut Frame<B>,
-    app_tui_mode: TuiMode,                        // <-- ADDED
-    current_list_selector: &Option<SelectorType>, // <-- ADDED
-    value_input: &mut Input,                      // <-- ADDED
-) {
-    let (title_noun, key_name) = match *current_list_selector {
-        Some(SelectorType::Home) => ("Custom Path", "home"),
-        Some(SelectorType::Image) => ("Custom Image", "image"),
-        None => ("Custom Value", ""),
-    };
-
-    let title = if app_tui_mode == TuiMode::Modify {
-        format!(" Edit {title_noun} for: {key_name} ")
+// --- RENAMED: Home-specific ---
+fn draw_home_custom_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
+    let title = if app.tui_mode == TuiMode::Modify {
+        " Edit Custom Path for: home "
     } else {
-        format!(" Add {title_noun} for: {key_name} ")
+        " Add Custom Path for: home "
     };
 
     let area = centered_rect(60, 20, f.size());
     f.render_widget(Clear, area);
 
     let width = area.width.max(3) - 3;
-    let scroll = value_input.visual_scroll(width as usize);
+    let scroll = app.value_input.visual_scroll(width as usize);
 
-    let input_widget = Paragraph::new(value_input.value())
+    let input_widget = Paragraph::new(app.value_input.value())
         .style(Style::default().fg(Color::Yellow))
         .scroll((0, scroll as u16))
         .block(Block::default().borders(Borders::ALL).title(title));
@@ -1180,7 +1332,120 @@ fn draw_list_custom_popup<B: Backend>(
     f.render_widget(input_widget, area);
 
     f.set_cursor(
-        area.x + 1 + (value_input.visual_cursor().max(scroll) - scroll) as u16,
+        area.x + 1 + (app.value_input.visual_cursor().max(scroll) - scroll) as u16,
+        area.y + 1,
+    )
+}
+fn draw_image_select_popup<B: Backend>(
+    f: &mut Frame<B>,
+    app_tui_mode: TuiMode,
+    state: &mut ImageSelectorState,
+) {
+    let area = centered_rect(80, 80, f.size());
+    f.render_widget(Clear, area); // Clear first
+
+    // Title
+    let title = if app_tui_mode == TuiMode::Modify {
+        " Edit Value: Image "
+    } else {
+        " Add Value: Image "
+    };
+
+    let main_block = Block::default().borders(Borders::ALL).title(title);
+    let inner_area = main_block.inner(area);
+    f.render_widget(main_block, area);
+
+    // Layout for Tabs + List
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // For tabs
+            Constraint::Min(0),    // For list
+        ])
+        .split(inner_area);
+
+    // --- Draw Tabs ---
+    let tab_titles: Vec<Line> = DISTROBOX_IMAGE_DATA
+        .iter()
+        .map(|tab| Line::from(Span::styled(tab.title, Style::default())))
+        .collect();
+    let tabs = Tabs::new(tab_titles)
+        .block(Block::default().borders(Borders::BOTTOM))
+        .select(state.tab_index)
+        .style(Style::default().fg(Color::Gray))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
+    f.render_widget(tabs, chunks[0]);
+
+    // --- Draw List ---
+    let list_items: Vec<ListItem> = state
+        .items
+        .iter()
+        .map(|item| match item {
+            ImageListItem::Group(group) => {
+                let prefix = if state.expanded_groups.contains(group.name) {
+                    "v "
+                } else {
+                    "> "
+                };
+                ListItem::new(Line::from(Span::styled(
+                    format!("{prefix}{}", group.name),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )))
+            }
+            ImageListItem::Image(image) => {
+                if image.display_name == CUSTOM_OCI_IMAGE_OPTION {
+                    ListItem::new(Line::from(Span::styled(
+                        format!("  {}", image.display_name),
+                        Style::default().fg(Color::Yellow),
+                    )))
+                } else {
+                    ListItem::new(Line::from(Span::raw(format!("  - {}", image.display_name))))
+                }
+            }
+        })
+        .collect();
+
+    let list = List::new(list_items)
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightGreen)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("  "); // No symbol, just highlight line
+
+    f.render_stateful_widget(list, chunks[1], &mut state.list_state);
+}
+
+// --- NEW: Draw function for custom image input ---
+fn draw_image_custom_popup<B: Backend>(f: &mut Frame<B>, app: &mut App) {
+    let title = if app.tui_mode == TuiMode::Modify {
+        " Edit Custom OCI Image for: image "
+    } else {
+        " Add Custom OCI Image for: image "
+    };
+
+    let area = centered_rect(60, 20, f.size());
+    f.render_widget(Clear, area);
+
+    let width = area.width.max(3) - 3;
+    let scroll = app.value_input.visual_scroll(width as usize);
+
+    let input_widget = Paragraph::new(app.value_input.value())
+        .style(Style::default().fg(Color::Yellow))
+        .scroll((0, scroll as u16))
+        .block(Block::default().borders(Borders::ALL).title(title));
+
+    f.render_widget(input_widget, area);
+
+    f.set_cursor(
+        area.x + 1 + (app.value_input.visual_cursor().max(scroll) - scroll) as u16,
         area.y + 1,
     )
 }
