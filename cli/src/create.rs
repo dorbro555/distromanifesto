@@ -1,7 +1,4 @@
-// In cli/src/create.rs
-
 use anyhow::{Result};
-use dirs::home_dir;
 use std::{path::PathBuf};
 
 pub fn launch_creator() -> Result<()> {
