@@ -12,7 +12,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame, Terminal,
 };
-use std::io::{self, Stdout};
+use std::io;
 use std::time::Duration;
 
 // --- App State ---
@@ -76,7 +76,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<()> {
 }
 
 // --- UI Drawing ---
-fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
+fn ui<B: Backend>(f: &mut Frame<B>, _app: &App) {
     // For now, just a simple 3-panel layout
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
