@@ -26,12 +26,6 @@ use tui_input::Input;
 
 use crate::setup;
 
-// --- Schema Definition ---
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SelectorType {
-    Home,
-    Image,
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum KeyType {
@@ -1308,7 +1302,7 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                     " (Space/←/→) Toggle | (Enter) Accept | (Esc) Cancel ".to_string(),
                     Style::default(),
                 ),
-                AppMode::AddingKey(list_state) => (
+                AppMode::AddingKey(_list_state) => (
                     " (↑/↓) Select | (Enter) Next | (Esc) Cancel ".to_string(),
                     Style::default().fg(Color::Cyan),
                 ),
