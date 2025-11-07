@@ -8,7 +8,7 @@ use crossterm::{
 };
 use ratatui::{
     backend::{Backend, CrosstermBackend},
-    layout::{Layout, Constraint, Direction},
+    layout::{Constraint, Direction, Layout},
     widgets::{Block, Borders, Paragraph},
     Frame, Terminal,
 };
@@ -97,12 +97,14 @@ fn ui<B: Backend>(f: &mut Frame<B>, _app: &App) {
 
     // --- Panel 2: Manifests ---
     let block2 = Block::default().title("Manifests").borders(Borders::ALL);
-     let p2 = Paragraph::new("List of manifests... (from `~/.distromanifesto/homes/`)");
+    let p2 = Paragraph::new("List of manifests... (from `~/.distromanifesto/manifests/`)");
     f.render_widget(p2.block(block2), chunks[1]);
-    
+
     // --- Panel 3: Homes ---
-    let block3 = Block::default().title("Managed Homes").borders(Borders::ALL);
-     let p3 = Paragraph::new("List of home dirs... (from `~/.distromanifesto/homes/`)");
+    let block3 = Block::default()
+        .title("Managed Homes")
+        .borders(Borders::ALL);
+    let p3 = Paragraph::new("List of home dirs... (from `~/.distromanifesto/homes/`)");
     f.render_widget(p3.block(block3), chunks[2]);
 
     // We'll also need a footer for keybindings

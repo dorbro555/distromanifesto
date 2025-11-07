@@ -900,7 +900,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> anyhow::Res
                                 let name = app.value_input.value().to_string();
                                 if !name.is_empty() {
                                     // --- NEW: Validate file path ---
-                                    let path_str = format!("~/.distromanifesto/homes/{}.ini", name);
+                                    let path_str = format!("~/.distromanifesto/manifests/{}.ini", name);
                                     let full_path = setup::get_full_path_from_str(&path_str)?;
 
                                     if full_path.exists() {

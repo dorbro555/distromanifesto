@@ -5,26 +5,26 @@ use dirs::home_dir;
 
 /// Ensures that ~/.distromanifesto and its subdirectories exist.
 /// Returns the path to the base directory.
-pub fn ensure_hidden_dir() -> std::io::Result<PathBuf> {
-    let mut dir = dirs::home_dir().expect("Could not find home directory");
-    dir.push(".distromanifesto");
 
-    // Create ~/.distromanifesto if missing
-    if !dir.exists() {
-        fs::create_dir_all(&dir)?;
-        println!("Created {:?}", dir);
-    }
+pub(crate) fn ensure_hidden_dir() -> Result<(), anyhow::Error> {
+    let mut homes_dir = home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+    homes_dir.push(".distromanifesto");
+    
+    // Create the base .distromanifesto directory
+    fs::create_dir_all(&homes_dir)?;
 
-    // Create subdirectories
-    for sub in &["manifests", "templates"] {
-        let sub_path = dir.join(sub);
-        if !sub_path.exists() {
-            fs::create_dir_all(&sub_path)?;
-            println!("Created {:?}", sub_path);
-        }
-    }
+    // Create the homes/ subdirectory
+    let mut homes_sub_dir = homes_dir.clone();
+    homes_sub_dir.push("homes");
+    fs::create_dir_all(&homes_sub_dir)?;
 
-    Ok(dir)
+    // Create the manifests/ subdirectory
+    let mut manifests_sub_dir = homes_dir.clone();
+    manifests_sub_dir.push("manifests");
+    fs::create_dir_all(&manifests_sub_dir)?;
+
+    Ok(())
 }
 
 /// Parses a tilde-prefixed path and creates the directory.
