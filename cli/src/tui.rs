@@ -24,6 +24,8 @@ use std::{
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
+use crate::setup;
+
 // --- Schema Definition ---
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SelectorType {
@@ -288,6 +290,7 @@ impl Schema {
 enum AppMode {
     WizardStepName,
     WizardStepImage(ImageSelectorState),
+    WizardStepHome(ListState),
     EditingFile,
     EditingString,
     EditingBool,
@@ -322,6 +325,9 @@ struct App<'a> {
     home_dir_options: Vec<String>,
     tui_mode: TuiMode,
     wizard_name_buffer: String,
+    wizard_image_selection: Option<String>, // <-- ADD THIS
+    wizard_home_selection: Option<String>,  // <-- ADD THIS
+    wizard_error: Option<String>,
     should_quit: bool,
 }
 
@@ -355,6 +361,9 @@ impl<'a> App<'a> {
             home_dir_options: Vec::new(),
             tui_mode: mode,
             wizard_name_buffer: String::new(),
+            wizard_image_selection: None,
+            wizard_home_selection: None,
+            wizard_error: None,
             should_quit: false,
         };
         app.refresh_list_items_from_items();
@@ -419,7 +428,7 @@ impl<'a> App<'a> {
                         self.mode = AppMode::EditingBool;
                     }
                     KeyType::HomeDir => {
-                        self.load_home_dir_options();
+                        self.load_home_dir_options(None);
                         let mut list_state = ListState::default();
                         let current_idx = self
                             .home_dir_options
@@ -494,6 +503,16 @@ impl<'a> App<'a> {
                         current_section = section.clone();
                     }
                     file_content.push_str(&format!("{key} = {value}\n"));
+                }
+            }
+        }
+
+        for item in &self.items {
+            if let DisplayItem::Property(_, key, value) = item {
+                if key == "home" {
+                    // Try to create the directory. This will do nothing
+                    // if it's not a managed path or if it already exists.
+                    setup::create_managed_home(value)?;
                 }
             }
         }
@@ -574,7 +593,7 @@ impl<'a> App<'a> {
                     self.mode = AppMode::AddingStringValue;
                 }
                 KeyType::HomeDir => {
-                    self.load_home_dir_options();
+                    self.load_home_dir_options(None);
                     let mut list_state = ListState::default();
                     list_state.select(Some(0));
                     self.mode = AppMode::SelectingHome(list_state);
@@ -645,9 +664,10 @@ impl<'a> App<'a> {
         self.current_bool_value = !self.current_bool_value;
     }
 
-    fn load_home_dir_options(&mut self) {
+    fn load_home_dir_options(&mut self, wizard_name: Option<&str>) {
         let mut options = vec!["host".to_string(), "none".to_string()];
 
+        // --- Add existing managed homes ---
         if let Ok(homes_path) = dirs::home_dir()
             .ok_or_else(|| anyhow!("Could not find home directory"))
             .map(|mut p| {
@@ -667,6 +687,13 @@ impl<'a> App<'a> {
                 }
             }
         }
+
+        let create_option = if let Some(name) = wizard_name {
+            format!("[ Create New: ~/.distromanifesto/homes/{} ]", name)
+        } else {
+            "[ Create New Managed Home ]".to_string()
+        };
+        options.push(create_option);
 
         options.push(CUSTOM_HOME_PATH_OPTION.to_string());
         self.home_dir_options = options;
@@ -785,6 +812,25 @@ impl<'a> App<'a> {
             }
         }
     }
+
+    fn finalize_wizard(&mut self) {
+        let section_name = self.wizard_name_buffer.clone();
+        let image = self.wizard_image_selection.clone().unwrap_or_default();
+        let home = self.wizard_home_selection.clone().unwrap_or_default();
+
+        self.current_section = section_name.clone();
+
+        // Create the initial items
+        self.items = vec![
+            DisplayItem::Section(section_name),
+            DisplayItem::Property(self.current_section.clone(), "image".to_string(), image),
+            DisplayItem::Property(self.current_section.clone(), "home".to_string(), home),
+        ];
+        self.refresh_list_items_from_items();
+        self.state.select(Some(1)); // Select the image
+
+        self.mode = AppMode::EditingFile; // <-- Drop into editor
+    }
 }
 
 // --- Main TUI Functions ---
@@ -825,11 +871,11 @@ pub(crate) fn run_tui(
     Ok(())
 }
 
-fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
+fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> anyhow::Result<()> {
     loop {
         terminal.draw(|f| ui(f, app))?;
 
-        if event::poll(Duration::from_millis(100))? {
+        if event::poll(Duration::from_millis(100)).map_err(anyhow::Error::from)? {
             if let AppMode::Saved = app.mode {
                 if app.status_timer > 0 {
                     app.status_timer -= 1;
@@ -845,7 +891,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                 continue;
             }
 
-            if let Event::Key(key) = event::read()? {
+            if let Event::Key(key) = event::read().map_err(anyhow::Error::from)? {
                 match app.mode {
                     // --- NEW WIZARD STEP 1: NAME ---
                     AppMode::WizardStepName => {
@@ -853,11 +899,25 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                             KeyCode::Enter => {
                                 let name = app.value_input.value().to_string();
                                 if !name.is_empty() {
-                                    app.wizard_name_buffer = name;
-                                    app.value_input.reset();
-                                    // Go to next step
-                                    let state = app.create_image_selector_state();
-                                    app.mode = AppMode::WizardStepImage(state);
+                                    // --- NEW: Validate file path ---
+                                    let path_str = format!("~/.distromanifesto/homes/{}.ini", name);
+                                    let full_path = setup::get_full_path_from_str(&path_str)?;
+
+                                    if full_path.exists() {
+                                        app.wizard_error = Some(format!(
+                                            "Error: {} already exists.",
+                                            full_path.display()
+                                        ));
+                                    } else {
+                                        app.wizard_error = None;
+                                        app.wizard_name_buffer = name;
+                                        app.file_path = full_path; // <-- SET THE REAL PATH
+                                        app.value_input.reset();
+
+                                        // Go to next step
+                                        let state = app.create_image_selector_state();
+                                        app.mode = AppMode::WizardStepImage(state);
+                                    }
                                 }
                             }
                             KeyCode::Esc => {
@@ -902,31 +962,72 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                                             } else {
                                                 // --- WIZARD IS DONE, SUBMIT AND MOVE TO EDITOR ---
                                                 if app.tui_mode == TuiMode::Create {
-                                                    // This is the final step
-                                                    let section_name =
-                                                        app.wizard_name_buffer.clone();
-                                                    app.current_section = section_name.clone();
+                                                    // --- This is now Step 2 ---
+                                                    app.wizard_image_selection =
+                                                        Some(image.full_url.to_string());
 
-                                                    // Create the initial items
-                                                    app.items = vec![
-                                                        DisplayItem::Section(section_name),
-                                                        DisplayItem::Property(
-                                                            app.current_section.clone(),
-                                                            "image".to_string(),
-                                                            image.full_url.to_string(),
-                                                        ),
-                                                    ];
-                                                    app.refresh_list_items_from_items();
-                                                    app.state.select(Some(1)); // Select the image
-
-                                                    app.mode = AppMode::EditingFile;
-                                                // <-- Drop into editor
+                                                    // Go to Step 3: Home
+                                                    let mut list_state = ListState::default();
+                                                    list_state.select(Some(0));
+                                                    // Pass the wizard name to get the smart "Create" option
+                                                    let name = app.wizard_name_buffer.clone();
+                                                    app.load_home_dir_options(Some(&name));
+                                                    app.mode = AppMode::WizardStepHome(list_state);
                                                 } else {
-                                                    // This is just modify logic
                                                     app.submit_image_select(image.full_url);
                                                 }
                                             }
                                         }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    AppMode::WizardStepHome(ref mut list_state) => {
+                        match key.code {
+                            KeyCode::Esc => {
+                                // Go back to Step 2
+                                let state = app.create_image_selector_state();
+                                app.mode = AppMode::WizardStepImage(state);
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                let i = list_state.selected().unwrap_or(0);
+                                let next = if i >= app.home_dir_options.len() - 1 {
+                                    0
+                                } else {
+                                    i + 1
+                                };
+                                list_state.select(Some(next));
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                let i = list_state.selected().unwrap_or(0);
+                                let prev = if i == 0 {
+                                    app.home_dir_options.len() - 1
+                                } else {
+                                    i - 1
+                                };
+                                list_state.select(Some(prev));
+                            }
+                            KeyCode::Enter => {
+                                if let Some(index) = list_state.selected() {
+                                    let selected = app.home_dir_options[index].clone();
+
+                                    if selected == CUSTOM_HOME_PATH_OPTION {
+                                        app.value_input.reset();
+                                        app.mode = AppMode::CustomHomeInput;
+                                    } else if selected.starts_with("[ Create New:") {
+                                        // It's our smart create option
+                                        let path = format!(
+                                            "~/.distromanifesto/homes/{}",
+                                            app.wizard_name_buffer
+                                        );
+                                        app.wizard_home_selection = Some(path);
+                                        app.finalize_wizard(); // Finish
+                                    } else {
+                                        // It's a normal selection (host, none, etc.)
+                                        app.wizard_home_selection = Some(selected);
+                                        app.finalize_wizard(); // Finish
                                     }
                                 }
                             }
@@ -1062,12 +1163,34 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                     }
                     AppMode::CustomHomeInput => {
                         match key.code {
-                            KeyCode::Enter => app.submit_home_custom(), // <-- Home
-                            KeyCode::Esc => {
+                            KeyCode::Enter => {
                                 if app.tui_mode == TuiMode::Modify {
-                                    app.cancel_editing();
+                                    app.submit_home_custom();
                                 } else {
-                                    app.cancel_adding();
+                                    // We are in the Create wizard
+                                    let new_value = app.value_input.value().to_string();
+                                    if !new_value.is_empty() {
+                                        app.wizard_home_selection = Some(new_value);
+                                        app.finalize_wizard(); // Finish
+                                    } else {
+                                        // Go back to home selection
+                                        let mut list_state = ListState::default();
+                                        list_state.select(Some(0));
+                                        let name = app.wizard_name_buffer.clone();
+                                        app.load_home_dir_options(Some(&name));
+                                        app.mode = AppMode::WizardStepHome(list_state);
+                                    }
+                                }
+                            }
+                            KeyCode::Esc => {
+                                if app.tui_mode == TuiMode::Create {
+                                    let mut list_state = ListState::default();
+                                    list_state.select(Some(0));
+                                    let name = app.wizard_name_buffer.clone();
+                                    app.load_home_dir_options(Some(&name));
+                                    app.mode = AppMode::WizardStepHome(list_state);
+                                } else {
+                                    app.cancel_editing();
                                 }
                             }
                             _ => {
@@ -1104,6 +1227,15 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         AppMode::WizardStepImage(state) => {
             // Draw *only* the image selector, fullscreen
             draw_image_select_popup(f, app.tui_mode, state, f.size());
+        }
+        AppMode::WizardStepHome(list_state) => {
+            draw_home_select_popup(
+                f,
+                app.tui_mode,
+                &app.home_dir_options,
+                list_state,
+                f.size(), // Fullscreen
+            );
         }
         AppMode::CustomImageInput => {
             // Draw the custom input, but also the image selector *behind* it
@@ -1168,8 +1300,14 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                         (title_text, footer_style)
                     }
                 },
-                AppMode::EditingString => (" (Enter) Accept | (Esc) Cancel ".to_string(), Style::default()),
-                AppMode::EditingBool => (" (Space/←/→) Toggle | (Enter) Accept | (Esc) Cancel ".to_string(), Style::default()),
+                AppMode::EditingString => (
+                    " (Enter) Accept | (Esc) Cancel ".to_string(),
+                    Style::default(),
+                ),
+                AppMode::EditingBool => (
+                    " (Space/←/→) Toggle | (Enter) Accept | (Esc) Cancel ".to_string(),
+                    Style::default(),
+                ),
                 AppMode::AddingKey(list_state) => (
                     " (↑/↓) Select | (Enter) Next | (Esc) Cancel ".to_string(),
                     Style::default().fg(Color::Cyan),
@@ -1206,6 +1344,10 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                 AppMode::WizardStepName | AppMode::WizardStepImage(_) => {
                     (String::new(), Style::default())
                 } // Should not be reached
+                AppMode::WizardStepHome(_) => (
+                    " (↑/↓) Select | (Enter) Accept | (Esc) Back ".to_string(),
+                    Style::default(),
+                ),
             };
 
             let footer_block = Block::default()
@@ -1243,7 +1385,15 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                 AppMode::AddingStringValue => draw_add_string_value_popup(f, app),
                 AppMode::AddingBoolValue => draw_add_bool_value_popup(f, app),
                 AppMode::SelectingHome(list_state) => {
-                    draw_home_select_popup(f, app.tui_mode, &app.home_dir_options, list_state);
+                    // We're in "modify" mode, so create a popup rect
+                    let area = centered_rect(60, 50, f.size());
+                    draw_home_select_popup(
+                        f,
+                        app.tui_mode,
+                        &app.home_dir_options,
+                        list_state,
+                        area, // <-- Pass the new area
+                    );
                 }
                 AppMode::CustomHomeInput => {
                     draw_home_custom_popup(f, app);
@@ -1343,6 +1493,7 @@ fn draw_home_select_popup<B: Backend>(
     app_tui_mode: TuiMode,
     home_dir_options: &Vec<String>,
     list_state: &mut ListState,
+    area: Rect,
 ) {
     let title = if app_tui_mode == TuiMode::Modify {
         " Edit Value: Home "
@@ -1350,7 +1501,6 @@ fn draw_home_select_popup<B: Backend>(
         " Add Value: Home "
     };
 
-    let area = centered_rect(60, 50, f.size());
     f.render_widget(Clear, area);
 
     let items: Vec<ListItem> = home_dir_options
@@ -1521,7 +1671,7 @@ fn draw_wizard_name_step<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let area = f.size();
 
     // Create a 50% width, 3-line high centered block for the input
-    let popup_area = centered_rect(50, 15, area); // 50% width, 15% height
+    let popup_area = centered_rect(60, 20, area); // 60% width, 20% height
 
     let title = " Welcome! Enter a name for your new manifest: ";
 
@@ -1533,8 +1683,23 @@ fn draw_wizard_name_step<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         .scroll((0, scroll as u16))
         .block(Block::default().borders(Borders::ALL).title(title));
 
-    f.render_widget(Clear, popup_area); // Clear area before drawing
-    f.render_widget(input, popup_area);
+    let inner_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Input box
+            Constraint::Length(1), // Error message
+        ])
+        .split(popup_area);
+
+    f.render_widget(Clear, popup_area);
+    f.render_widget(input, inner_chunks[0]); // Render input in top part
+
+    if let Some(error) = &app.wizard_error {
+        let error_text = Paragraph::new(error.as_str())
+            .style(Style::default().fg(Color::Red))
+            .alignment(Alignment::Center);
+        f.render_widget(error_text, inner_chunks[1]);
+    }
 
     // Set cursor
     f.set_cursor(
