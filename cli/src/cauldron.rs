@@ -15,7 +15,9 @@ use ratatui::{
 use std::fs;
 use std::io;
 use std::path::PathBuf;
-use std::time::Duration;
+// --- Add these ---
+use std::process::Command;
+use std::time::{Duration, Instant};
 
 use crate::setup;
 
@@ -23,6 +25,8 @@ use crate::setup;
 struct App {
     manifests: Vec<String>,
     homes: Vec<String>,
+    containers: Vec<String>, // <-- Add this
+    last_refresh: Instant,  // <-- Add this
     should_quit: bool,
 }
 
@@ -32,11 +36,26 @@ impl App {
         let manifests =
             load_directory_contents("manifests").context("Failed to load manifests")?;
         let homes = load_directory_contents("homes").context("Failed to load homes")?;
+        let containers = load_distrobox_list().context("Failed to load distrobox list")?; // <-- Add this
+
         Ok(App {
             manifests,
             homes,
+            containers, // <-- Add this
+            last_refresh: Instant::now(), // <-- Add this
             should_quit: false,
         })
+    }
+
+    // --- NEW: Refresh data method ---
+    fn refresh_data(&mut self) -> Result<()> {
+        self.manifests =
+            load_directory_contents("manifests").context("Failed to load manifests")?;
+        self.homes = load_directory_contents("homes").context("Failed to load homes")?;
+        self.containers =
+            load_distrobox_list().context("Failed to load distrobox list")?;
+        self.last_refresh = Instant::now();
+        Ok(())
     }
 }
 
@@ -57,12 +76,42 @@ fn load_directory_contents(dir_name: &str) -> Result<Vec<String>> {
     Ok(entries)
 }
 
+// --- NEW: Helper to run `distrobox list` and parse output ---
+fn load_distrobox_list() -> Result<Vec<String>> {
+    let output = Command::new("distrobox")
+        .args(["list", "--no-color"])
+        .output()
+        .context("Failed to execute 'distrobox list'")?;
+
+    if !output.status.success() {
+        let error_msg = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow::anyhow!(
+            "distrobox list failed: {}",
+            error_msg
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut containers = Vec::new();
+
+    // Iterate over lines, skipping the header
+    for line in stdout.lines().skip(1) {
+        // Split by '|' and take the second-to-last-column (Name)
+        if let Some(name) = line.split('|').nth(1) {
+            let trimmed_name = name.trim();
+            if !trimmed_name.is_empty() {
+                containers.push(trimmed_name.to_string());
+            }
+        }
+    }
+
+    Ok(containers)
+}
+
 // --- Main TUI Function ---
 pub fn launch_tui() -> Result<()> {
-    // Ensure directories exist before trying to read them
-    setup::ensure_hidden_dir().context("Failed to ensure .distromanifesto directories")?;
-
-    // Setup terminal
+    // ... (setup code is the same)
+    // ...
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -73,7 +122,8 @@ pub fn launch_tui() -> Result<()> {
     let app = App::new()?; // Load data on startup
     let res = run_app(&mut terminal, app);
 
-    // Restore terminal
+    // ... (restore terminal code is the same)
+    // ...
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -91,33 +141,47 @@ pub fn launch_tui() -> Result<()> {
 
 // --- Main App Loop ---
 fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<()> {
+    // --- Define refresh rate ---
+    let refresh_rate = Duration::from_secs(5);
+
     loop {
         terminal.draw(|f| ui(f, &app))?;
 
-        // Event handling
-        if event::poll(Duration::from_millis(250))? {
+        // --- Event handling with a timeout ---
+        let timeout = refresh_rate
+            .checked_sub(app.last_refresh.elapsed())
+            .unwrap_or_else(|| Duration::from_secs(0));
+
+        if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('q') => {
                         app.should_quit = true;
+                    }
+                    KeyCode::Char('r') => {
+                        // Manual refresh
+                        app.refresh_data()?;
                     }
                     _ => {}
                 }
             }
         }
 
+        // --- Auto-refresh logic ---
+        if app.last_refresh.elapsed() >= refresh_rate {
+            app.refresh_data()?;
+        }
+
         if app.should_quit {
             return Ok(());
         }
-
-        // --- Update app state here (e.g., fetch lists) ---
-        // We'll add a ticker here later to refresh the data
     }
 }
 
 // --- UI Drawing ---
 fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
-    // For now, just a simple 3-panel layout
+    // ... (layout code is the same)
+    // ...
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(
@@ -130,10 +194,16 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
         )
         .split(f.size());
 
+
     // --- Panel 1: Containers ---
-    let block1 = Block::default().title("Containers").borders(Borders::ALL);
-    let p1 = Paragraph::new("List of active containers... (from `distrobox list`)");
-    f.render_widget(p1.block(block1), chunks[0]);
+    let container_items: Vec<ListItem> = app
+        .containers
+        .iter()
+        .map(|c| ListItem::new(c.as_str()))
+        .collect();
+    let container_list =
+        List::new(container_items).block(Block::default().title("Containers").borders(Borders::ALL));
+    f.render_widget(container_list, chunks[0]); // <-- Render this
 
     // --- Panel 2: Manifests ---
     let manifest_items: Vec<ListItem> = app
