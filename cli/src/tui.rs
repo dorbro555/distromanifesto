@@ -374,7 +374,7 @@ impl<'a> App<'a> {
                     );
                 }
                 DisplayItem::Property(_, key, value) => {
-                    list_items.push(ListItem::new(format!("  {key} = {value}")));
+                    list_items.push(ListItem::new(format!("  {key}={value}")));
                 }
             }
         }
@@ -457,7 +457,7 @@ impl<'a> App<'a> {
             if let DisplayItem::Property(section, key, _) = &self.items[index].clone() {
                 self.items[index] =
                     DisplayItem::Property(section.clone(), key.clone(), new_value.clone());
-                self.list_items[index] = ListItem::new(format!("  {key} = {new_value}"));
+                self.list_items[index] = ListItem::new(format!("  {key}={new_value}"));
 
                 self.cancel_editing();
                 self.state.select(Some(index));
@@ -495,7 +495,7 @@ impl<'a> App<'a> {
                         file_content.push_str(&format!("\n[{section}]\n"));
                         current_section = section.clone();
                     }
-                    file_content.push_str(&format!("{key} = {value}\n"));
+                    file_content.push_str(&format!("{key}={value}\n"));
                 }
             }
         }
