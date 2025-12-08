@@ -8,7 +8,7 @@ use crossterm::{
 };
 use ratatui::{
     backend::{Backend, CrosstermBackend},
-    layout::{Constraint, Direction, Layout},
+    layout::{Alignment, Constraint, Direction, Layout},
     // --- We need more style/text modules now ---
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -350,6 +350,18 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<()> {
 
 // --- UI Drawing ---
 fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
+    // --- NEW: Main layout with footer ---
+    let main_chunks_with_footer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),    // Main app area
+            Constraint::Length(1), // Footer area
+        ])
+        .split(f.size());
+
+    let app_area = main_chunks_with_footer[0]; // <-- All other layout happens in here
+    let footer_area = main_chunks_with_footer[1];
+
     // --- Define styles ---
     let focused_style = Style::default().fg(Color::Yellow);
     let default_style = Style::default().fg(Color::Gray);
@@ -358,116 +370,58 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         .bg(Color::LightGreen)
         .add_modifier(Modifier::BOLD);
 
-    // --- Main two-pane layout ---
+    // --- Main two-pane layout (now uses app_area) ---
     let main_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(33), Constraint::Percentage(67)].as_ref())
-        .split(f.size());
+        .split(app_area); // <-- Use app_area, not f.size()
 
     let left_pane = main_chunks[0];
     let right_pane = main_chunks[1];
 
-    // --- NEW: Build Left Pane (Stacked Boxes) ---
+    // --- Build Left Pane (Stacked Boxes) ---
     let left_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(
             [
                 Constraint::Percentage(33),
                 Constraint::Percentage(33),
-                Constraint::Percentage(34), // Give last one slightly more
+                Constraint::Percentage(34),
             ]
             .as_ref(),
         )
         .split(left_pane);
 
     // --- Render Containers List ---
-    let container_style = if app.focused_pane == FocusedPane::Containers {
-        focused_style
-    } else {
-        default_style
-    };
-    let container_items: Vec<ListItem> = app
-        .containers
-        .iter()
-        .map(|c| ListItem::new(c.as_str()))
-        .collect();
+    let container_style = if app.focused_pane == FocusedPane::Containers { focused_style } else { default_style };
+    let container_items: Vec<ListItem> = app.containers.iter().map(|c| ListItem::new(c.as_str())).collect();
     let container_list = List::new(container_items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Containers")
-                .border_style(container_style),
-        )
-        .highlight_style(if app.focused_pane == FocusedPane::Containers {
-            focused_list_style
-        } else {
-            Style::default()
-        });
+        .block(Block::default().borders(Borders::ALL).title("Containers").border_style(container_style))
+        .highlight_style(if app.focused_pane == FocusedPane::Containers { focused_list_style } else { Style::default() });
     f.render_stateful_widget(container_list, left_chunks[0], &mut app.container_state);
-
+    
     // --- Render Manifests List ---
-    let manifest_style = if app.focused_pane == FocusedPane::Manifests {
-        focused_style
-    } else {
-        default_style
-    };
-    let manifest_items: Vec<ListItem> = app
-        .manifests
-        .iter()
-        .map(|m| ListItem::new(m.as_str()))
-        .collect();
+    let manifest_style = if app.focused_pane == FocusedPane::Manifests { focused_style } else { default_style };
+    let manifest_items: Vec<ListItem> = app.manifests.iter().map(|m| ListItem::new(m.as_str())).collect();
     let manifest_list = List::new(manifest_items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Manifests")
-                .border_style(manifest_style),
-        )
-        .highlight_style(if app.focused_pane == FocusedPane::Manifests {
-            focused_list_style
-        } else {
-            Style::default()
-        });
+        .block(Block::default().borders(Borders::ALL).title("Manifests").border_style(manifest_style))
+        .highlight_style(if app.focused_pane == FocusedPane::Manifests { focused_list_style } else { Style::default() });
     f.render_stateful_widget(manifest_list, left_chunks[1], &mut app.manifest_state);
 
     // --- Render Homes List ---
-    let home_style = if app.focused_pane == FocusedPane::Homes {
-        focused_style
-    } else {
-        default_style
-    };
-    let home_items: Vec<ListItem> = app
-        .homes
-        .iter()
-        .map(|h| ListItem::new(h.as_str()))
-        .collect();
+    let home_style = if app.focused_pane == FocusedPane::Homes { focused_style } else { default_style };
+    let home_items: Vec<ListItem> = app.homes.iter().map(|h| ListItem::new(h.as_str())).collect();
     let home_list = List::new(home_items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Managed Homes")
-                .border_style(home_style),
-        )
-        .highlight_style(if app.focused_pane == FocusedPane::Homes {
-            focused_list_style
-        } else {
-            Style::default()
-        });
+        .block(Block::default().borders(Borders::ALL).title("Managed Homes").border_style(home_style))
+        .highlight_style(if app.focused_pane == FocusedPane::Homes { focused_list_style } else { Style::default() });
     f.render_stateful_widget(home_list, left_chunks[2], &mut app.home_state);
+    
+    // --- Render Right Pane (with inline tabs) ---
+    let content_border_style = if app.focused_pane == FocusedPane::Content { focused_style } else { default_style };
+    let content_block = Block::default().borders(Borders::ALL).border_style(content_border_style);
+    let inner_area = content_block.inner(right_pane);
+    f.render_widget(content_block, right_pane);
 
-    // --- NEW: Render Right Pane (with inline tabs) ---
-    let content_border_style = if app.focused_pane == FocusedPane::Content {
-        focused_style
-    } else {
-        default_style
-    };
-    let content_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(content_border_style);
-    let inner_area = content_block.inner(right_pane); // Get rect *inside* the borders
-    f.render_widget(content_block, right_pane); // Render the outer box *first*
-
-    // Split the inner area for tabs and content
     let inner_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -475,10 +429,10 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             Constraint::Min(0),    // For content
         ])
         .split(inner_area);
-
+    
     let tab_area = inner_chunks[0];
     let main_content_area = inner_chunks[1];
-
+    
     // --- Render "Inline" Tabs ---
     let tab_titles = vec![
         Line::from(Span::styled(" [ Info ] ", Style::default())),
@@ -492,30 +446,30 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         );
-    f.render_widget(tabs, tab_area); // Render tabs *inside* the outer box
+    f.render_widget(tabs, tab_area);
 
-    // --- Render Content ---
-    let help_text =
-        "\n(q) Quit | (r) Refresh | (Tab) Switch Pane | (↑/↓) Navigate | (h/l) Switch Content Tabs";
+    // --- MODIFIED: Render Content (help text removed) ---
     let content_widget = match app.content_tab_index {
         0 => {
             // --- Info Tab ---
-            Paragraph::new(app.active_content.clone() + help_text).block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .border_style(default_style),
-            )
+            Paragraph::new(app.active_content.clone()) // <-- help_text removed
+                .block(Block::default().borders(Borders::TOP).border_style(default_style))
         }
         1 => {
             // --- Actions Tab ---
             let actions_text = "Actions for this item will be listed here.\n\n(e.g., 'c' to create, 'm' to modify...)";
-            Paragraph::new(actions_text.to_string() + help_text).block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .border_style(default_style),
-            )
+            Paragraph::new(actions_text.to_string()) // <-- help_text removed
+                .block(Block::default().borders(Borders::TOP).border_style(default_style))
         }
-        _ => unreachable!(), // We only have two tabs
+        _ => unreachable!(),
     };
+    
     f.render_widget(content_widget, main_content_area);
+
+    // --- NEW: Render Fixed Footer ---
+    let help_text = "(q) Quit | (r) Refresh | (Tab) Switch Pane | (↑/↓) Navigate | (h/l) Switch Tabs";
+    let footer_widget = Paragraph::new(help_text)
+        .style(Style::default().fg(Color::Cyan))
+        .alignment(Alignment::Center);
+    f.render_widget(footer_widget, footer_area);
 }
