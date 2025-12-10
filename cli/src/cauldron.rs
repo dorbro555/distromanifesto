@@ -263,6 +263,55 @@ impl App {
         };
         self.update_active_content(); // <-- ADD THIS
     }
+
+    /// Stops the currently selected container
+    fn action_stop_container(&mut self) -> Result<()> {
+        if let Some(index) = self.container_state.selected() {
+            let name = &self.containers[index];
+            // run: distrobox stop --yes <name>
+            let output = Command::new("distrobox")
+                .args(["stop", "--yes", name])
+                .output()
+                .context("Failed to stop container")?;
+
+            if output.status.success() {
+                self.refresh_data()?; // Refresh list on success
+            } else {
+                // For now, we'll just put the error in the content view so the user sees it
+                let err = String::from_utf8_lossy(&output.stderr);
+                self.active_content = format!("Error stopping container:\n\n{}", err);
+                self.focused_pane = FocusedPane::Content; // Switch focus so they see the error
+                self.content_tab_index = 0; // Show Info tab
+            }
+        }
+        Ok(())
+    }
+
+    /// Deletes the currently selected container
+    fn action_delete_container(&mut self) -> Result<()> {
+        if let Some(index) = self.container_state.selected() {
+            let name = &self.containers[index];
+            // run: distrobox rm --force <name>
+            let output = Command::new("distrobox")
+                .args(["rm", "--force", name])
+                .output()
+                .context("Failed to delete container")?;
+
+            if output.status.success() {
+                self.refresh_data()?; // Refresh list on success
+                                      // Reset selection if out of bounds
+                if index >= self.containers.len() && !self.containers.is_empty() {
+                    self.container_state.select(Some(self.containers.len() - 1));
+                }
+            } else {
+                let err = String::from_utf8_lossy(&output.stderr);
+                self.active_content = format!("Error deleting container:\n\n{}", err);
+                self.focused_pane = FocusedPane::Content;
+                self.content_tab_index = 0;
+            }
+        }
+        Ok(())
+    }
 }
 
 // --- Main TUI Function (Restored) ---
@@ -301,43 +350,57 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<()> {
     let refresh_rate = Duration::from_secs(5);
 
     loop {
+        // 1. DRAW
         terminal.draw(|f| ui(f, &mut app))?;
 
+        // 2. TIMEOUT
         let timeout = refresh_rate
             .checked_sub(app.last_refresh.elapsed())
             .unwrap_or_else(|| Duration::from_secs(0));
 
+        // 3. POLL
         if event::poll(timeout)? {
+            // 4. READ
             if let Event::Key(key) = event::read()? {
-                // --- We only want to cycle tabs if content pane is focused ---
-                if app.focused_pane == FocusedPane::Content {
+                // 5. FILTER: Only handle PRESS events
+                if key.kind == event::KeyEventKind::Press {
                     match key.code {
+                        // --- Global Navigation & System Keys ---
+                        KeyCode::Tab => app.cycle_focus(),
+                        KeyCode::Char('q') => app.should_quit = true,
+                        KeyCode::Char('r') => app.refresh_data()?,
+
+                        // --- Global Tab Switching (Now works everywhere) ---
                         KeyCode::Char('l') | KeyCode::Right => {
                             app.content_tab_index = (app.content_tab_index + 1) % 2;
-                            // 2 tabs for now
                         }
                         KeyCode::Char('h') | KeyCode::Left => {
                             app.content_tab_index = if app.content_tab_index == 0 { 1 } else { 0 };
                         }
-                        KeyCode::Tab => app.cycle_focus(),
-                        KeyCode::Char('q') => app.should_quit = true,
-                        KeyCode::Char('r') => app.refresh_data()?,
-                        _ => {} // Other keys (like up/down) are ignored here
-                    }
-                } else {
-                    // --- Handle keys for list panes ---
-                    match key.code {
-                        KeyCode::Char('q') => app.should_quit = true,
-                        KeyCode::Char('r') => app.refresh_data()?,
-                        KeyCode::Tab => app.cycle_focus(),
+
+                        // --- List Navigation (Safe: ignores input if Content pane is focused) ---
                         KeyCode::Down | KeyCode::Char('j') => app.list_next(),
                         KeyCode::Up | KeyCode::Char('k') => app.list_previous(),
+
+                        // --- Context-Specific Actions ---
+                        KeyCode::Char('s') => {
+                            if app.focused_pane == FocusedPane::Containers {
+                                app.action_stop_container()?;
+                            }
+                        }
+                        KeyCode::Char('d') => {
+                            if app.focused_pane == FocusedPane::Containers {
+                                app.action_delete_container()?;
+                            }
+                            // Add other 'd' cases for Manifests/Homes here later
+                        }
                         _ => {}
                     }
                 }
             }
         }
 
+        // 6. AUTO-REFRESH
         if app.last_refresh.elapsed() >= refresh_rate {
             app.refresh_data()?;
         }
@@ -393,32 +456,89 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         .split(left_pane);
 
     // --- Render Containers List ---
-    let container_style = if app.focused_pane == FocusedPane::Containers { focused_style } else { default_style };
-    let container_items: Vec<ListItem> = app.containers.iter().map(|c| ListItem::new(c.as_str())).collect();
+    let container_style = if app.focused_pane == FocusedPane::Containers {
+        focused_style
+    } else {
+        default_style
+    };
+    let container_items: Vec<ListItem> = app
+        .containers
+        .iter()
+        .map(|c| ListItem::new(c.as_str()))
+        .collect();
     let container_list = List::new(container_items)
-        .block(Block::default().borders(Borders::ALL).title("Containers").border_style(container_style))
-        .highlight_style(if app.focused_pane == FocusedPane::Containers { focused_list_style } else { Style::default() });
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Containers")
+                .border_style(container_style),
+        )
+        .highlight_style(if app.focused_pane == FocusedPane::Containers {
+            focused_list_style
+        } else {
+            Style::default()
+        });
     f.render_stateful_widget(container_list, left_chunks[0], &mut app.container_state);
-    
+
     // --- Render Manifests List ---
-    let manifest_style = if app.focused_pane == FocusedPane::Manifests { focused_style } else { default_style };
-    let manifest_items: Vec<ListItem> = app.manifests.iter().map(|m| ListItem::new(m.as_str())).collect();
+    let manifest_style = if app.focused_pane == FocusedPane::Manifests {
+        focused_style
+    } else {
+        default_style
+    };
+    let manifest_items: Vec<ListItem> = app
+        .manifests
+        .iter()
+        .map(|m| ListItem::new(m.as_str()))
+        .collect();
     let manifest_list = List::new(manifest_items)
-        .block(Block::default().borders(Borders::ALL).title("Manifests").border_style(manifest_style))
-        .highlight_style(if app.focused_pane == FocusedPane::Manifests { focused_list_style } else { Style::default() });
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Manifests")
+                .border_style(manifest_style),
+        )
+        .highlight_style(if app.focused_pane == FocusedPane::Manifests {
+            focused_list_style
+        } else {
+            Style::default()
+        });
     f.render_stateful_widget(manifest_list, left_chunks[1], &mut app.manifest_state);
 
     // --- Render Homes List ---
-    let home_style = if app.focused_pane == FocusedPane::Homes { focused_style } else { default_style };
-    let home_items: Vec<ListItem> = app.homes.iter().map(|h| ListItem::new(h.as_str())).collect();
+    let home_style = if app.focused_pane == FocusedPane::Homes {
+        focused_style
+    } else {
+        default_style
+    };
+    let home_items: Vec<ListItem> = app
+        .homes
+        .iter()
+        .map(|h| ListItem::new(h.as_str()))
+        .collect();
     let home_list = List::new(home_items)
-        .block(Block::default().borders(Borders::ALL).title("Managed Homes").border_style(home_style))
-        .highlight_style(if app.focused_pane == FocusedPane::Homes { focused_list_style } else { Style::default() });
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Managed Homes")
+                .border_style(home_style),
+        )
+        .highlight_style(if app.focused_pane == FocusedPane::Homes {
+            focused_list_style
+        } else {
+            Style::default()
+        });
     f.render_stateful_widget(home_list, left_chunks[2], &mut app.home_state);
-    
+
     // --- Render Right Pane (with inline tabs) ---
-    let content_border_style = if app.focused_pane == FocusedPane::Content { focused_style } else { default_style };
-    let content_block = Block::default().borders(Borders::ALL).border_style(content_border_style);
+    let content_border_style = if app.focused_pane == FocusedPane::Content {
+        focused_style
+    } else {
+        default_style
+    };
+    let content_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(content_border_style);
     let inner_area = content_block.inner(right_pane);
     f.render_widget(content_block, right_pane);
 
@@ -429,10 +549,10 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             Constraint::Min(0),    // For content
         ])
         .split(inner_area);
-    
+
     let tab_area = inner_chunks[0];
     let main_content_area = inner_chunks[1];
-    
+
     // --- Render "Inline" Tabs ---
     let tab_titles = vec![
         Line::from(Span::styled(" [ Info ] ", Style::default())),
@@ -452,22 +572,52 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let content_widget = match app.content_tab_index {
         0 => {
             // --- Info Tab ---
-            Paragraph::new(app.active_content.clone()) // <-- help_text removed
-                .block(Block::default().borders(Borders::TOP).border_style(default_style))
+            Paragraph::new(app.active_content.clone()).block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(default_style),
+            )
         }
         1 => {
-            // --- Actions Tab ---
-            let actions_text = "Actions for this item will be listed here.\n\n(e.g., 'c' to create, 'm' to modify...)";
-            Paragraph::new(actions_text.to_string()) // <-- help_text removed
-                .block(Block::default().borders(Borders::TOP).border_style(default_style))
+            // --- NEW: Dynamic Actions Tab ---
+            let actions_text = match app.focused_pane {
+                FocusedPane::Containers => vec![
+                    "Available Actions for Container:",
+                    "",
+                    "  (s) Stop      - Stop the container (distrobox stop --yes)",
+                    "  (d) Delete    - Remove the container (distrobox rm --force)",
+                    // "  (e) Enter     - Enter shell (coming soon)",
+                ],
+                FocusedPane::Manifests => vec![
+                    "Available Actions for Manifest:",
+                    "",
+                    "  (d) Delete    - Delete this manifest file",
+                    "  (m) Modify    - Open in Editor (coming soon)",
+                    "  (c) Create    - Create container from this manifest (coming soon)",
+                ],
+                FocusedPane::Homes => vec![
+                    "Available Actions for Home:",
+                    "",
+                    "  (d) Delete    - Delete this home directory (careful!)",
+                ],
+                FocusedPane::Content => vec!["Select a list on the left to see actions."],
+            };
+
+            let text_joined = actions_text.join("\n");
+            Paragraph::new(text_joined).block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(default_style),
+            )
         }
         _ => unreachable!(),
     };
-    
+
     f.render_widget(content_widget, main_content_area);
 
     // --- NEW: Render Fixed Footer ---
-    let help_text = "(q) Quit | (r) Refresh | (Tab) Switch Pane | (↑/↓) Navigate | (h/l) Switch Tabs";
+    let help_text =
+        "(q) Quit | (r) Refresh | (Tab) Switch Pane | (↑/↓) Navigate | (h/l) Switch Tabs";
     let footer_widget = Paragraph::new(help_text)
         .style(Style::default().fg(Color::Cyan))
         .alignment(Alignment::Center);
