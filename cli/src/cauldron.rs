@@ -23,6 +23,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use crate::modify;
 use crate::setup;
 
 // --- NEW: Enum for active (focused) pane ---
@@ -312,6 +313,46 @@ impl App {
         }
         Ok(())
     }
+
+    fn action_delete_manifest(&mut self) -> Result<()> {
+        if let Some(index) = self.manifest_state.selected() {
+            let name = &self.manifests[index];
+            let path_str = format!("~/.distromanifesto/manifests/{}", name);
+
+            // Resolve path
+            let path = setup::get_full_path_from_str(&path_str)?;
+
+            // Delete file
+            if path.exists() {
+                fs::remove_file(&path).context("Failed to delete manifest file")?;
+            }
+
+            self.refresh_data()?; // Reload list
+
+            // Fix selection if it went out of bounds
+            if index >= self.manifests.len() && !self.manifests.is_empty() {
+                self.manifest_state.select(Some(self.manifests.len() - 1));
+            }
+        }
+        Ok(())
+    }
+
+    /// Launches the existing TUI editor for the selected manifest
+    fn action_modify_manifest(&mut self) -> Result<()> {
+        if let Some(index) = self.manifest_state.selected() {
+            let name = &self.manifests[index];
+            let path_str = format!("~/.distromanifesto/manifests/{}", name);
+            let path = setup::get_full_path_from_str(&path_str)?;
+
+            // Call the external editor module
+            // This will take over the terminal!
+            modify::launch_editor(&path)?;
+
+            // When we return here, we need to refresh because the file might have changed
+            self.refresh_data()?;
+        }
+        Ok(())
+    }
 }
 
 // --- Main TUI Function (Restored) ---
@@ -346,7 +387,7 @@ pub fn launch_tui() -> Result<()> {
 }
 
 // --- Main App Loop ---
-fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<()> {
+fn run_app<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, mut app: App) -> Result<()> {
     let refresh_rate = Duration::from_secs(5);
 
     loop {
@@ -391,8 +432,32 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<()> {
                         KeyCode::Char('d') => {
                             if app.focused_pane == FocusedPane::Containers {
                                 app.action_delete_container()?;
+                            } else if app.focused_pane == FocusedPane::Manifests {
+                                // --- NEW: Delete Manifest ---
+                                app.action_delete_manifest()?;
+                            } else if app.focused_pane == FocusedPane::Homes {
+                                // Placeholder for delete home
                             }
                             // Add other 'd' cases for Manifests/Homes here later
+                        }
+                        KeyCode::Char('m') => {
+                            if app.focused_pane == FocusedPane::Manifests {
+                                // --- NEW: Modify Manifest ---
+
+                                // 1. Run the editor
+                                app.action_modify_manifest()?;
+
+                                // 2. CRITICAL: RESTORE TERMINAL STATE
+                                // Since modify::launch_editor() tore it down, we must rebuild it.
+                                enable_raw_mode()?;
+                                execute!(
+                                    terminal.backend_mut(),
+                                    EnterAlternateScreen,
+                                    EnableMouseCapture
+                                )?;
+                                terminal.hide_cursor()?;
+                                terminal.clear()?; // Force a full redraw
+                            }
                         }
                         _ => {}
                     }
@@ -592,7 +657,7 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                     "Available Actions for Manifest:",
                     "",
                     "  (d) Delete    - Delete this manifest file",
-                    "  (m) Modify    - Open in Editor (coming soon)",
+                    "  (m) Modify    - Open in Editor",
                     "  (c) Create    - Create container from this manifest (coming soon)",
                 ],
                 FocusedPane::Homes => vec![
