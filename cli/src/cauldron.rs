@@ -478,6 +478,28 @@ impl App {
         }
         Ok(())
     }
+
+    fn action_enter_container(&mut self) -> Result<()> {
+        if let Some(index) = self.container_state.selected() {
+            let name = &self.containers[index];
+
+            // Prepare the command: distrobox enter <name>
+            let mut cmd = Command::new("distrobox");
+            cmd.arg("enter").arg(name);
+
+            // Important: Inherit stdio so the user can interact with the shell
+            cmd.stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .stdin(Stdio::inherit());
+
+            // Run it and wait for it to finish (user types 'exit')
+            let _ = cmd.spawn()?.wait()?;
+
+            // We don't necessarily need to refresh data here, but it doesn't hurt
+            self.refresh_data()?;
+        }
+        Ok(())
+    }
 }
 
 // --- Main TUI Function (Restored) ---
@@ -610,6 +632,35 @@ fn run_app<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, mut app: App
                                     EnableMouseCapture
                                 )?;
                                 terminal.hide_cursor()?; // Optional, usually good for TUI
+                                terminal.clear()?;
+                            }
+                        }
+                        KeyCode::Char('e') => {
+                            if app.focused_pane == FocusedPane::Containers {
+                                // 1. Suspend TUI
+                                disable_raw_mode()?;
+                                execute!(
+                                    terminal.backend_mut(),
+                                    LeaveAlternateScreen,
+                                    DisableMouseCapture
+                                )?;
+                                terminal.show_cursor()?;
+
+                                // 2. Run Action (Enter Container)
+                                if let Err(e) = app.action_enter_container() {
+                                    println!("Error entering container: {}", e);
+                                    println!("Press Enter to continue...");
+                                    let _ = std::io::stdin().read_line(&mut String::new());
+                                }
+
+                                // 3. Restore TUI
+                                enable_raw_mode()?;
+                                execute!(
+                                    terminal.backend_mut(),
+                                    EnterAlternateScreen,
+                                    EnableMouseCapture
+                                )?;
+                                terminal.hide_cursor()?;
                                 terminal.clear()?;
                             }
                         }
@@ -803,6 +854,7 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                 FocusedPane::Containers => vec![
                     "Available Actions for Container:",
                     "",
+                    "  (e) Enter     - Open a shell inside this container",
                     "  (s) Stop      - Stop the container (distrobox stop --yes)",
                     "  (d) Delete    - Remove the container (distrobox rm --force)",
                     // "  (e) Enter     - Enter shell (coming soon)",
