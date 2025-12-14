@@ -27,6 +27,14 @@ use crate::modify;
 use crate::setup;
 use distro_ini::Ini;
 
+#[derive(Clone)] // Useful for cloning if needed
+struct Container {
+    id: String,
+    name: String,
+    status: String,
+    image: String,
+}
+
 // --- NEW: Enum for active (focused) pane ---
 #[derive(PartialEq)]
 enum FocusedPane {
@@ -58,7 +66,8 @@ fn load_directory_contents(dir_name: &str) -> Result<Vec<String>> {
 
 // --- Helper to run `distrobox list` and parse output ---
 // Moved *before* App to be in scope
-fn load_distrobox_list() -> Result<Vec<String>> {
+fn load_distrobox_list() -> Result<Vec<Container>> {
+    // Run: distrobox list --no-color
     let output = Command::new("distrobox")
         .args(["list", "--no-color"])
         .output()
@@ -72,12 +81,18 @@ fn load_distrobox_list() -> Result<Vec<String>> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut containers = Vec::new();
 
+    // Output format is usually: ID | NAME | STATUS | IMAGE
+    // We skip the header line
     for line in stdout.lines().skip(1) {
-        if let Some(name) = line.split('|').nth(1) {
-            let trimmed_name = name.trim();
-            if !trimmed_name.is_empty() {
-                containers.push(trimmed_name.to_string());
-            }
+        let parts: Vec<&str> = line.split('|').map(|s| s.trim()).collect();
+
+        if parts.len() >= 4 {
+            containers.push(Container {
+                id: parts[0].to_string(),
+                name: parts[1].to_string(),
+                status: parts[2].to_string(),
+                image: parts[3].to_string(),
+            });
         }
     }
 
@@ -91,7 +106,7 @@ struct App {
     // Data lists
     manifests: Vec<String>,
     homes: Vec<String>,
-    containers: Vec<String>,
+    containers: Vec<Container>,
 
     // TUI list states
     container_state: ListState,
@@ -168,9 +183,15 @@ impl App {
             FocusedPane::Containers => self.container_state.selected().map_or_else(
                 || "No container selected.".to_string(),
                 |i| {
-                    let container_name = &self.containers[i];
-                    // TODO: Run `distrobox list --no-color` again and find the full line
-                    format!("Details for container: {}", container_name)
+                    if i < self.containers.len() {
+                        let c = &self.containers[i];
+                        format!(
+                            "Container Details:\n\nName:   {}\nID:     {}\nStatus: {}\nImage:  {}",
+                            c.name, c.id, c.status, c.image
+                        )
+                    } else {
+                        "Selection out of bounds.".to_string()
+                    }
                 },
             ),
             FocusedPane::Manifests => self.manifest_state.selected().map_or_else(
@@ -202,7 +223,9 @@ impl App {
                 // This logic will get smarter later.
                 self.active_content.clone() // For now, just keep what's there
             }
-            FocusedPane::DeleteConfirmHome | FocusedPane::DeleteConfirmContainer => self.active_content.clone(),
+            FocusedPane::DeleteConfirmHome | FocusedPane::DeleteConfirmContainer => {
+                self.active_content.clone()
+            }
         };
         self.active_content = content;
     }
@@ -276,7 +299,7 @@ impl App {
     /// Stops the currently selected container
     fn action_stop_container(&mut self) -> Result<()> {
         if let Some(index) = self.container_state.selected() {
-            let name = &self.containers[index];
+            let name = &self.containers[index].name;
             // run: distrobox stop --yes <name>
             let output = Command::new("distrobox")
                 .args(["stop", "--yes", name])
@@ -308,7 +331,7 @@ impl App {
     /// Step 2: Actually delete (moved from original action_delete_container)
     fn action_finalize_delete_container(&mut self) -> Result<()> {
         if let Some(index) = self.container_state.selected() {
-            let name = &self.containers[index];
+            let name = &self.containers[index].name;
             // run: distrobox rm --force <name>
             let output = Command::new("distrobox")
                 .args(["rm", "--force", name])
@@ -324,7 +347,7 @@ impl App {
                 let err = String::from_utf8_lossy(&output.stderr);
                 self.active_content = format!("Error deleting container:\n\n{}", err);
                 // If error, we go to content to show it
-                self.focused_pane = FocusedPane::Content; 
+                self.focused_pane = FocusedPane::Content;
                 self.content_tab_index = 0;
                 return Ok(());
             }
@@ -500,7 +523,7 @@ impl App {
 
     fn action_enter_container(&mut self) -> Result<()> {
         if let Some(index) = self.container_state.selected() {
-            let name = &self.containers[index];
+            let name = &self.containers[index].name;
 
             // Prepare the command: distrobox enter <name>
             let mut cmd = Command::new("distrobox");
@@ -655,7 +678,7 @@ fn run_app<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, mut app: App
                         KeyCode::Char('d') => {
                             if app.focused_pane == FocusedPane::Containers {
                                 // Change this to call PROMPT instead of delete
-                                app.action_prompt_delete_container()?; 
+                                app.action_prompt_delete_container()?;
                             } else if app.focused_pane == FocusedPane::Manifests {
                                 app.action_delete_manifest()?;
                             } else if app.focused_pane == FocusedPane::Homes {
@@ -809,7 +832,7 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let container_items: Vec<ListItem> = app
         .containers
         .iter()
-        .map(|c| ListItem::new(c.as_str()))
+        .map(|c| ListItem::new(c.name.as_str()))
         .collect();
     let container_list = List::new(container_items)
         .block(
@@ -947,12 +970,8 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                     "  (d) Delete    - Delete this home directory (w/ confirmation)",
                 ],
                 FocusedPane::Content => vec!["Select a list on the left to see actions."],
-                FocusedPane::DeleteConfirmHome => vec![
-                    "Confirmation in progress...",
-                ],
-                FocusedPane::DeleteConfirmContainer => vec![
-                    "Confirmation in progress...",
-                ],
+                FocusedPane::DeleteConfirmHome => vec!["Confirmation in progress..."],
+                FocusedPane::DeleteConfirmContainer => vec!["Confirmation in progress..."],
             };
 
             let text_joined = actions_text.join("\n");
@@ -979,16 +998,22 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     if app.focused_pane == FocusedPane::DeleteConfirmHome {
         let area = centered_rect(50, 20, f.size());
         f.render_widget(Clear, area);
-        let block = Block::default().borders(Borders::ALL).title(" ⚠️  DANGER ZONE ").style(Style::default().fg(Color::Red));
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" ⚠️  DANGER ZONE ")
+            .style(Style::default().fg(Color::Red));
         let text = Paragraph::new("\nAre you sure you want to PERMANENTLY delete this home directory?\nThis cannot be undone.\n\n(y) Yes, Delete  |  (n) Cancel").alignment(Alignment::Center).block(block);
         f.render_widget(text, area);
     }
-    
+
     // --- NEW: Container Popup ---
     if app.focused_pane == FocusedPane::DeleteConfirmContainer {
         let area = centered_rect(50, 20, f.size());
         f.render_widget(Clear, area);
-        let block = Block::default().borders(Borders::ALL).title(" Confirm Container Deletion ").style(Style::default().fg(Color::Red));
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Confirm Container Deletion ")
+            .style(Style::default().fg(Color::Red));
         let text = Paragraph::new("\nAre you sure you want to delete this container?\nIt will be forcibly removed.\n\n(y) Yes, Delete  |  (n) Cancel").alignment(Alignment::Center).block(block);
         f.render_widget(text, area);
     }
