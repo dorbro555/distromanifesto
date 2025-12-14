@@ -12,7 +12,7 @@ use ratatui::{
     // --- We need more style/text modules now ---
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs},
     // ---
     Frame,
     Terminal,
@@ -34,6 +34,8 @@ enum FocusedPane {
     Manifests,
     Homes,
     Content, // For the right-hand side
+    DeleteConfirmHome,
+    DeleteConfirmContainer,
 }
 
 // --- Helper function to load file/dir names from a ~/.distromanifesto subdirectory ---
@@ -200,6 +202,7 @@ impl App {
                 // This logic will get smarter later.
                 self.active_content.clone() // For now, just keep what's there
             }
+            FocusedPane::DeleteConfirmHome | FocusedPane::DeleteConfirmContainer => self.active_content.clone(),
         };
         self.active_content = content;
     }
@@ -211,6 +214,7 @@ impl App {
             FocusedPane::Manifests => (&mut self.manifest_state, self.manifests.len()),
             FocusedPane::Homes => (&mut self.home_state, self.homes.len()),
             FocusedPane::Content => return,
+            FocusedPane::DeleteConfirmHome | FocusedPane::DeleteConfirmContainer => return,
         };
 
         if len == 0 {
@@ -227,7 +231,7 @@ impl App {
             None => 0,
         };
         state.select(Some(i));
-        self.update_active_content(); // <-- ADD THIS
+        self.update_active_content();
     }
 
     fn list_previous(&mut self) {
@@ -236,6 +240,7 @@ impl App {
             FocusedPane::Manifests => (&mut self.manifest_state, self.manifests.len()),
             FocusedPane::Homes => (&mut self.home_state, self.homes.len()),
             FocusedPane::Content => return,
+            FocusedPane::DeleteConfirmHome | FocusedPane::DeleteConfirmContainer => return,
         };
 
         if len == 0 {
@@ -262,6 +267,8 @@ impl App {
             FocusedPane::Manifests => FocusedPane::Homes,
             FocusedPane::Homes => FocusedPane::Content,
             FocusedPane::Content => FocusedPane::Containers,
+            FocusedPane::DeleteConfirmHome => FocusedPane::DeleteConfirmHome,
+            FocusedPane::DeleteConfirmContainer => FocusedPane::DeleteConfirmContainer,
         };
         self.update_active_content(); // <-- ADD THIS
     }
@@ -290,7 +297,16 @@ impl App {
     }
 
     /// Deletes the currently selected container
-    fn action_delete_container(&mut self) -> Result<()> {
+    /// Step 1: Prompt the user
+    fn action_prompt_delete_container(&mut self) -> Result<()> {
+        if self.container_state.selected().is_some() {
+            self.focused_pane = FocusedPane::DeleteConfirmContainer;
+        }
+        Ok(())
+    }
+
+    /// Step 2: Actually delete (moved from original action_delete_container)
+    fn action_finalize_delete_container(&mut self) -> Result<()> {
         if let Some(index) = self.container_state.selected() {
             let name = &self.containers[index];
             // run: distrobox rm --force <name>
@@ -300,18 +316,21 @@ impl App {
                 .context("Failed to delete container")?;
 
             if output.status.success() {
-                self.refresh_data()?; // Refresh list on success
-                                      // Reset selection if out of bounds
+                self.refresh_data()?;
                 if index >= self.containers.len() && !self.containers.is_empty() {
                     self.container_state.select(Some(self.containers.len() - 1));
                 }
             } else {
                 let err = String::from_utf8_lossy(&output.stderr);
                 self.active_content = format!("Error deleting container:\n\n{}", err);
-                self.focused_pane = FocusedPane::Content;
+                // If error, we go to content to show it
+                self.focused_pane = FocusedPane::Content; 
                 self.content_tab_index = 0;
+                return Ok(());
             }
         }
+        // If success (or no selection), return to container list
+        self.focused_pane = FocusedPane::Containers;
         Ok(())
     }
 
@@ -500,6 +519,37 @@ impl App {
         }
         Ok(())
     }
+
+    fn action_prompt_delete_home(&mut self) -> Result<()> {
+        // Only switch to confirm mode if we actually have a selection
+        if self.home_state.selected().is_some() {
+            self.focused_pane = FocusedPane::DeleteConfirmHome;
+        }
+        Ok(())
+    }
+
+    fn action_finalize_delete_home(&mut self) -> Result<()> {
+        if let Some(index) = self.home_state.selected() {
+            let name = &self.homes[index];
+            let path_str = format!("~/.distromanifesto/homes/{}", name);
+            let path = setup::get_full_path_from_str(&path_str)?;
+
+            // DANGER: Recursively delete the directory
+            if path.exists() {
+                fs::remove_dir_all(&path).context("Failed to delete home directory")?;
+            }
+
+            self.refresh_data()?;
+
+            // Fix selection if out of bounds
+            if index >= self.homes.len() && !self.homes.is_empty() {
+                self.home_state.select(Some(self.homes.len() - 1));
+            }
+        }
+        // Return to normal mode
+        self.focused_pane = FocusedPane::Homes;
+        Ok(())
+    }
 }
 
 // --- Main TUI Function (Restored) ---
@@ -552,6 +602,32 @@ fn run_app<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, mut app: App
             if let Event::Key(key) = event::read()? {
                 // 5. FILTER: Only handle PRESS events
                 if key.kind == event::KeyEventKind::Press {
+                    //Handle Confirmation Popup First ---
+                    if app.focused_pane == FocusedPane::DeleteConfirmHome {
+                        match key.code {
+                            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                app.action_finalize_delete_home()?;
+                            }
+                            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                                app.focused_pane = FocusedPane::Homes;
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+                    // --- NEW: Handle Container Delete Popup ---
+                    if app.focused_pane == FocusedPane::DeleteConfirmContainer {
+                        match key.code {
+                            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                app.action_finalize_delete_container()?;
+                            }
+                            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                                app.focused_pane = FocusedPane::Containers;
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
                     match key.code {
                         // --- Global Navigation & System Keys ---
                         KeyCode::Tab => app.cycle_focus(),
@@ -578,14 +654,13 @@ fn run_app<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, mut app: App
                         }
                         KeyCode::Char('d') => {
                             if app.focused_pane == FocusedPane::Containers {
-                                app.action_delete_container()?;
+                                // Change this to call PROMPT instead of delete
+                                app.action_prompt_delete_container()?; 
                             } else if app.focused_pane == FocusedPane::Manifests {
-                                // --- NEW: Delete Manifest ---
                                 app.action_delete_manifest()?;
                             } else if app.focused_pane == FocusedPane::Homes {
-                                // Placeholder for delete home
+                                app.action_prompt_delete_home()?;
                             }
-                            // Add other 'd' cases for Manifests/Homes here later
                         }
                         KeyCode::Char('m') => {
                             if app.focused_pane == FocusedPane::Manifests {
@@ -869,9 +944,15 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                 FocusedPane::Homes => vec![
                     "Available Actions for Home:",
                     "",
-                    "  (d) Delete    - Delete this home directory (careful!)",
+                    "  (d) Delete    - Delete this home directory (w/ confirmation)",
                 ],
                 FocusedPane::Content => vec!["Select a list on the left to see actions."],
+                FocusedPane::DeleteConfirmHome => vec![
+                    "Confirmation in progress...",
+                ],
+                FocusedPane::DeleteConfirmContainer => vec![
+                    "Confirmation in progress...",
+                ],
             };
 
             let text_joined = actions_text.join("\n");
@@ -893,4 +974,46 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         .style(Style::default().fg(Color::Cyan))
         .alignment(Alignment::Center);
     f.render_widget(footer_widget, footer_area);
+
+    // Render Confirmation Popup
+    if app.focused_pane == FocusedPane::DeleteConfirmHome {
+        let area = centered_rect(50, 20, f.size());
+        f.render_widget(Clear, area);
+        let block = Block::default().borders(Borders::ALL).title(" ⚠️  DANGER ZONE ").style(Style::default().fg(Color::Red));
+        let text = Paragraph::new("\nAre you sure you want to PERMANENTLY delete this home directory?\nThis cannot be undone.\n\n(y) Yes, Delete  |  (n) Cancel").alignment(Alignment::Center).block(block);
+        f.render_widget(text, area);
+    }
+    
+    // --- NEW: Container Popup ---
+    if app.focused_pane == FocusedPane::DeleteConfirmContainer {
+        let area = centered_rect(50, 20, f.size());
+        f.render_widget(Clear, area);
+        let block = Block::default().borders(Borders::ALL).title(" Confirm Container Deletion ").style(Style::default().fg(Color::Red));
+        let text = Paragraph::new("\nAre you sure you want to delete this container?\nIt will be forcibly removed.\n\n(y) Yes, Delete  |  (n) Cancel").alignment(Alignment::Center).block(block);
+        f.render_widget(text, area);
+    }
+}
+
+fn centered_rect(
+    percent_x: u16,
+    percent_y: u16,
+    r: ratatui::layout::Rect,
+) -> ratatui::layout::Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
 }
