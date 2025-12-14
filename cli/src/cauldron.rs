@@ -212,9 +212,10 @@ impl App {
                 || "No home selected.".to_string(),
                 |i| {
                     let home_name = &self.homes[i];
-                    let path_str = format!("~/.distromanifesto/homes/{}", home_name);
-                    // TODO: Run `du -sh` on this path
-                    format!("Details for home: {}", path_str)
+                    format!(
+                        "Home Directory: {}\n\nLocation: ~/.distromanifesto/homes/{}\n\nPress (i) to calculate disk usage.", 
+                        home_name, home_name
+                    )
                 },
             ),
             FocusedPane::Content => {
@@ -573,6 +574,46 @@ impl App {
         self.focused_pane = FocusedPane::Homes;
         Ok(())
     }
+
+    // --- Inspect Home Action ---
+    fn action_inspect_home(&mut self) -> Result<()> {
+        if let Some(index) = self.home_state.selected() {
+            let name = &self.homes[index];
+            let path_str = format!("~/.distromanifesto/homes/{}", name);
+            let path = setup::get_full_path_from_str(&path_str)?;
+
+            // Show a "Loading..." message immediately
+            self.active_content = format!("Calculating disk usage for '{}'...\nPlease wait.", name);
+            
+            // Run `du -sh <path>`
+            // We use standard Command here. It might freeze the UI for a split second,
+            // which is acceptable for an explicit user action.
+            let output = Command::new("du")
+                .arg("-sh")
+                .arg(&path)
+                .output()
+                .context("Failed to run du")?;
+
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                // output is like "1.2G    /path/to/dir"
+                // We just want the first part, usually.
+                self.active_content = format!(
+                    "Disk Usage Report:\n\nHome: {}\nUsage: {}", 
+                    name, 
+                    stdout.trim()
+                );
+            } else {
+                let err = String::from_utf8_lossy(&output.stderr);
+                self.active_content = format!("Error calculating usage:\n{}", err);
+            }
+            
+            // Ensure we are showing the content pane so they see the result
+            self.focused_pane = FocusedPane::Content;
+            self.content_tab_index = 0; // Info tab
+        }
+        Ok(())
+    }
 }
 
 // --- Main TUI Function (Restored) ---
@@ -683,6 +724,11 @@ fn run_app<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, mut app: App
                                 app.action_delete_manifest()?;
                             } else if app.focused_pane == FocusedPane::Homes {
                                 app.action_prompt_delete_home()?;
+                            }
+                        }
+                        KeyCode::Char('i') => {
+                            if app.focused_pane == FocusedPane::Homes {
+                                app.action_inspect_home()?;
                             }
                         }
                         KeyCode::Char('m') => {
@@ -967,6 +1013,7 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                 FocusedPane::Homes => vec![
                     "Available Actions for Home:",
                     "",
+                    "  (i) Inspect   - Calculate disk usage (du -sh)", // <-- New
                     "  (d) Delete    - Delete this home directory (w/ confirmation)",
                 ],
                 FocusedPane::Content => vec!["Select a list on the left to see actions."],
