@@ -12,6 +12,7 @@ mod modify;
 mod constants;
 mod create;
 mod tui;
+mod assemble;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -43,6 +44,12 @@ pub enum Commands { // <-- Made pub and added Debug
         file: PathBuf,
     },
     Cauldron,
+    /// Assemble containers from a manifest file
+    Assemble { // <-- NEW
+        /// The name of the manifest file (e.g., 'dev' or 'dev.ini')
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
 }
 
 // All your main logic is now in this public function
@@ -68,6 +75,24 @@ pub fn run() -> Result<()> {
         }
         Some(Commands::Cauldron) => {
             cauldron::launch_tui()?
+        }
+        Some(Commands::Assemble { file }) => {
+            // We can optionally support looking in the ~/.distromanifesto/manifests folder
+            // if the user provides just a name like "dev" instead of a path.
+            // For now, let's assume they might pass a name, so we use your helper setup logic if needed.
+            // Or, purely based on file path provided:
+            if file.exists() {
+                assemble::create_containers_from_file(&file)?;
+            } else {
+                // Try to resolve it from the manifest store
+                let path_str = format!("~/.distromanifesto/manifests/{}", file.display());
+                let resolved_path = setup::get_full_path_from_str(&path_str)?;
+                if resolved_path.exists() {
+                    assemble::create_containers_from_file(&resolved_path)?;
+                } else {
+                    anyhow::bail!("Manifest file not found: {}", file.display());
+                }
+            }
         }
         None => {
             // Default to the create command if no subcommand is provided
