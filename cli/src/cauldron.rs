@@ -104,6 +104,7 @@ fn load_distrobox_list() -> Result<Vec<Container>> {
 // --- App State ---
 struct App {
     focused_pane: FocusedPane, // <-- Which pane is active
+    show_help: bool,
 
     // Data lists
     manifests: Vec<String>,
@@ -151,6 +152,7 @@ impl App {
         // --- Create the app instance ---
         let mut app = App {
             focused_pane: FocusedPane::Containers, // Default focus
+            show_help: false,
             manifests,
             homes,
             containers,
@@ -620,6 +622,19 @@ fn run_app<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, mut app: App
         if event::poll(timeout)? {
             // 4. READ
             if let Event::Key(key) = event::read()? {
+                // --- Global Help Toggle ---
+                if key.code == KeyCode::Char('?') {
+                    app.show_help = !app.show_help;
+                    continue; // Skip other processing
+                }
+
+                // If help is shown, ANY key closes it (or just Escape/?)
+                if app.show_help {
+                    if key.code == KeyCode::Esc || key.code == KeyCode::Char('q') || key.code == KeyCode::Char('?') {
+                        app.show_help = false;
+                    }
+                    continue; // Don't process other keys while help is open
+                }
                 // 5. FILTER: Only handle PRESS events
                 if key.kind == event::KeyEventKind::Press {
                     //Handle Confirmation Popup First ---
@@ -1098,6 +1113,71 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             .style(Style::default().fg(Color::Red));
         let text = Paragraph::new("\nAre you sure you want to delete this container?\nIt will be forcibly removed.\n\n(y) Yes, Delete  |  (n) Cancel").alignment(Alignment::Center).block(block);
         f.render_widget(text, area);
+    }
+
+    // --- Help Popup ---
+    if app.show_help {
+        let area = centered_rect(60, 60, f.size()); // Make it a bit tall
+        f.render_widget(Clear, area); // Clear background
+
+        let block = Block::default()
+            .title(" Keyboard Shortcuts ")
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::Cyan));
+
+        // specific actions based on where we are
+        let mut help_lines = vec![
+            "Global Navigation:",
+            "  TAB        Cycle Focus (Containers -> Manifests -> Homes)",
+            "  h/j/k/l    Navigate Lists",
+            "  ?          Toggle this Help",
+            "  q          Quit Application",
+            "",
+        ];
+
+        match app.focused_pane {
+            FocusedPane::Containers => {
+                help_lines.extend_from_slice(&[
+                    "Container Actions:",
+                    "  e          Enter Shell",
+                    "  s          Stop Container",
+                    "  u          Upgrade Packages",
+                    "  d          Delete Container",
+                ]);
+            },
+            FocusedPane::Manifests => {
+                help_lines.extend_from_slice(&[
+                    "Manifest Actions:",
+                    "  c          Assemble (Create) Containers",
+                    "  m          Modify (Edit) Manifest",
+                    "  n          New Manifest (Wizard)",
+                    "  v          Verify Syntax",
+                    "  d          Delete Manifest",
+                ]);
+            },
+            FocusedPane::Homes => {
+                help_lines.extend_from_slice(&[
+                    "Home Directory Actions:",
+                    "  i          Inspect (Disk Usage)",
+                    "  d          Delete Directory",
+                ]);
+            },
+            _ => {}
+        };
+        
+        // Add footer
+        help_lines.push("");
+        help_lines.push("Press any key to close.");
+
+        let text_content = help_lines.join("\n");
+        let paragraph = Paragraph::new(text_content)
+            .block(block)
+            .alignment(Alignment::Left)
+            .wrap(ratatui::widgets::Wrap { trim: true }); // Ensure text wraps if too long
+
+        // We use a margin so text isn't flush against the border
+        // (You can also use a layout inside the popup rect if preferred)
+        f.render_widget(paragraph, area);
     }
 }
 
