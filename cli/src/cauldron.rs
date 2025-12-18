@@ -883,11 +883,23 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     } else {
         default_style
     };
-    let container_items: Vec<ListItem> = app
-        .containers
-        .iter()
-        .map(|c| ListItem::new(c.name.as_str()))
-        .collect();
+    let container_items: Vec<ListItem> = app.containers.iter().map(|c| {
+        // Simple heuristic: if status contains "Up", it's running.
+        let style = if c.status.contains("Up") {
+            Style::default().fg(Color::Green)
+        } else if c.status.contains("Exited") || c.status.contains("Stopped") {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            // Unknown or created but never started
+            Style::default().fg(Color::Yellow)
+        };
+
+        // We can also add a symbol prefix
+        let symbol = if c.status.contains("Up") { "● " } else { "○ " };
+        let display_name = format!("{}{}", symbol, c.name);
+
+        ListItem::new(display_name).style(style)
+    }).collect();
     let container_list = List::new(container_items)
         .block(
             Block::default()
