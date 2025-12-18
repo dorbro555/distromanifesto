@@ -799,6 +799,23 @@ fn run_app<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, mut app: App
                                 app.refresh_data()?;
                             }
                         }
+                        KeyCode::Char('u') => {
+                            if app.focused_pane == FocusedPane::Containers {
+                                // Suspend
+                                disable_raw_mode()?;
+                                execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+                                terminal.show_cursor()?;
+
+                                // Action
+                                app.action_upgrade_container()?;
+
+                                // Restore
+                                enable_raw_mode()?;
+                                execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
+                                terminal.hide_cursor()?;
+                                terminal.clear()?;
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -990,9 +1007,9 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                     "Available Actions for Container:",
                     "",
                     "  (e) Enter     - Open a shell inside this container",
+                    "  (u) Upgrade   - Run package updates",
                     "  (s) Stop      - Stop the container (distrobox stop --yes)",
                     "  (d) Delete    - Remove the container (distrobox rm --force)",
-                    // "  (e) Enter     - Enter shell (coming soon)",
                 ],
                 FocusedPane::Manifests => vec![
                     "Available Actions for Manifest:",
