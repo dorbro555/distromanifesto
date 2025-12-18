@@ -602,15 +602,18 @@ pub fn launch_tui() -> Result<()> {
 
 // --- Main App Loop ---
 fn run_app<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, mut app: App) -> Result<()> {
-    let refresh_rate = Duration::from_secs(5);
+    // Define refresh rate (e.g., 2500ms = 2.5 seconds)
+    // We don't want it too fast or it might flicker/consume CPU running `distrobox list` constantly.
+    let tick_rate = Duration::from_millis(2500);
+    let mut last_tick = Instant::now();
 
     loop {
         // 1. DRAW
         terminal.draw(|f| ui(f, &mut app))?;
 
         // 2. TIMEOUT
-        let timeout = refresh_rate
-            .checked_sub(app.last_refresh.elapsed())
+    let timeout = tick_rate
+            .checked_sub(last_tick.elapsed())
             .unwrap_or_else(|| Duration::from_secs(0));
 
         // 3. POLL
@@ -822,9 +825,19 @@ fn run_app<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, mut app: App
             }
         }
 
-        // 6. AUTO-REFRESH
-        if app.last_refresh.elapsed() >= refresh_rate {
-            app.refresh_data()?;
+        // 6. AUTO-REFRESH Check if we need to refresh data (Tick)
+        if last_tick.elapsed() >= tick_rate {
+            // Only refresh if we aren't in a "blocking" mode (like a popup)
+            // preventing the list from jumping around while you are trying to confirm a delete.
+            match app.focused_pane {
+                FocusedPane::DeleteConfirmHome | FocusedPane::DeleteConfirmContainer => {
+                    // Do nothing, wait for user input
+                }
+                _ => {
+                    app.refresh_data()?;
+                }
+            }
+            last_tick = Instant::now();
         }
 
         if app.should_quit {
