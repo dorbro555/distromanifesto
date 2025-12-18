@@ -537,6 +537,36 @@ impl App {
         }
         Ok(())
     }
+
+    fn action_upgrade_container(&mut self) -> Result<()> {
+        if let Some(index) = self.container_state.selected() {
+            let name = &self.containers[index].name;
+
+            // distrobox upgrade <name>
+            let mut cmd = Command::new("distrobox");
+            cmd.arg("upgrade")
+               .arg(name);
+
+            // Definitely need stdio here as it runs package manager output (dnf/apt/pacman)
+            cmd.stdout(Stdio::inherit())
+               .stderr(Stdio::inherit())
+               .stdin(Stdio::inherit());
+
+            let status = cmd.spawn()?.wait()?;
+
+            if status.success() {
+                println!("\n✅ Container '{}' upgraded successfully.", name);
+            } else {
+                println!("\n❌ Error upgrading container '{}'.", name);
+            }
+
+            println!("Press Enter to continue...");
+            let _ = std::io::stdin().read_line(&mut String::new());
+        }
+        Ok(())
+    }
+
+    
 }
 
 // --- Main TUI Function (Restored) ---
@@ -636,7 +666,19 @@ fn run_app<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, mut app: App
                         // --- Context-Specific Actions ---
                         KeyCode::Char('s') => {
                             if app.focused_pane == FocusedPane::Containers {
+                                // Suspend
+                                disable_raw_mode()?;
+                                execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+                                terminal.show_cursor()?;
+
+                                // Action
                                 app.action_stop_container()?;
+
+                                // Restore
+                                enable_raw_mode()?;
+                                execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
+                                terminal.hide_cursor()?;
+                                terminal.clear()?;
                             }
                         }
                         KeyCode::Char('d') => {
