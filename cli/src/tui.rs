@@ -1,7 +1,7 @@
 use crate::constants::{CUSTOM_OCI_IMAGE_OPTION, DISTROBOX_IMAGE_DATA};
 use anyhow::{anyhow, Result};
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -885,6 +885,10 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> anyhow::Res
             }
 
             if let Event::Key(key) = event::read().map_err(anyhow::Error::from)? {
+                // Global Abort: Ctrl+C always quits
+                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    return Ok(()); // Break the loop, returning control to Cauldron
+                }
                 match app.mode {
                     // --- NEW WIZARD STEP 1: NAME ---
                     AppMode::WizardStepName => {
