@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 
 use crate::modify;
 use crate::setup;
+use crate::create;
+use crate::verify;
 use crate::assemble;
 
 #[derive(Clone)] // Useful for cloning if needed
@@ -510,6 +512,31 @@ impl App {
         }
         Ok(())
     }
+
+    fn action_verify_manifest(&mut self) -> Result<()> {
+        if let Some(index) = self.manifest_state.selected() {
+            let name = &self.manifests[index];
+            let path_str = format!("~/.distromanifesto/manifests/{}", name);
+            let path = setup::get_full_path_from_str(&path_str)?;
+
+            let content = fs::read_to_string(&path).context("Failed to read manifest")?;
+            
+            // Run the verification logic
+            match verify::verify_manifest(&content) {
+                Ok(_) => {
+                    self.active_content = format!("✅ Verification Successful!\n\nThe manifest '{}' is valid and ready to assemble.", name);
+                }
+                Err(e) => {
+                    self.active_content = format!("❌ Verification Failed:\n\n{}", e);
+                }
+            }
+            
+            // Show the result
+            self.focused_pane = FocusedPane::Content;
+            self.content_tab_index = 0;
+        }
+        Ok(())
+    }
 }
 
 // --- Main TUI Function (Restored) ---
@@ -702,6 +729,32 @@ fn run_app<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, mut app: App
                                 )?;
                                 terminal.hide_cursor()?;
                                 terminal.clear()?;
+                            }
+                        }
+                        KeyCode::Char('v') => {
+                            if app.focused_pane == FocusedPane::Manifests {
+                                app.action_verify_manifest()?;
+                            }
+                        }
+                        KeyCode::Char('n') => {
+                            if app.focused_pane == FocusedPane::Manifests {
+                                // 1. Suspend Cauldron TUI
+                                disable_raw_mode()?;
+                                execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+                                terminal.show_cursor()?;
+
+                                // 2. Launch the Creator Wizard
+                                // (We ignore the result/error for now so we can always restore the UI)
+                                let _ = create::launch_creator();
+
+                                // 3. Restore Cauldron TUI
+                                enable_raw_mode()?;
+                                execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
+                                terminal.hide_cursor()?;
+                                terminal.clear()?;
+                                
+                                // 4. Refresh data (in case a file was created)
+                                app.refresh_data()?;
                             }
                         }
                         _ => {}
@@ -904,6 +957,8 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                     "",
                     "  (d) Delete    - Delete this manifest file",
                     "  (m) Modify    - Open in Editor",
+                    "  (n) New       - Launch Manifest Wizard", // <-- New
+                    "  (v) Verify    - Check syntax validation",
                     "  (c) Create    - Create container(s) from this manifest",
                 ],
                 FocusedPane::Homes => vec![
