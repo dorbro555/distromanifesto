@@ -5,6 +5,8 @@
 ![License](https://img.shields.io/crates/l/distromanifesto)
 ![Build Status](https://img.shields.io/github/actions/workflow/status/dorbro555/distromanifesto/deploy.yml)
 
+![Distromanifesto Cauldron TUI](site/static/img/dimo-cauldron-tui-example.png)
+
 **Distromanifesto** (alias: `dimo`) is a wrapper for [Distrobox](https://distrobox.it/) that brings **Declarative Configuration** and a **TUI Management Dashboard** to your container workflow.
 
 Stop memorizing complex CLI flags. Define your containers in simple `.ini` files and manage them with a modern terminal interface.
@@ -22,9 +24,11 @@ Stop memorizing complex CLI flags. Define your containers in simple `.ini` files
 
 * **📄 Declarative Manifests**: Define your containers as code. Share your dev environment with a single `.ini` file.
 * **🧙 Interactive Wizard**: Create new complex container configurations using a friendly step-by-step TUI (`dimo create`).
-* **dashboard The Cauldron**: A centralized dashboard to view running containers, manage manifest files, and clean up storage (`dimo cauldron`).
+* **🖥️ The Cauldron**: A centralized dashboard to view running containers, manage manifest files, and clean up storage (`dimo cauldron`).
 * **🔧 Power User Control**: Supports advanced Distrobox features like `init_hooks`, `nvidia` GPU support, and custom `home` directories.
 * **⚡ Lightning Fast**: Built in Rust.
+
+![Distromanifesto Wizard Example](site/static/img/dimo-wizard-example.png)
 
 ## 📦 Installation
 
