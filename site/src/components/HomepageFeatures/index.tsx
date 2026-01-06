@@ -10,32 +10,32 @@ type FeatureItem = {
 
 const FeatureList: FeatureItem[] = [
   {
-    title: 'Easy to Use',
+    title: 'Declarative Manifests',
     Svg: require('@site/static/img/undraw_docusaurus_mountain.svg').default,
     description: (
       <>
-        Docusaurus was designed from the ground up to be easily installed and
-        used to get your website up and running quickly.
+        Stop memorizing complex CLI flags. Define your containers as code using 
+        simple <code>.ini</code> files and share them with your team.
       </>
     ),
   },
   {
-    title: 'Focus on What Matters',
+    title: 'Interactive Wizard',
     Svg: require('@site/static/img/undraw_docusaurus_tree.svg').default,
     description: (
       <>
-        Docusaurus lets you focus on your docs, and we&apos;ll do the chores. Go
-        ahead and move your docs into the <code>docs</code> directory.
+        New to Distrobox? Use the built-in TUI wizard (<code>dimo create</code>) 
+        to visually build complex container configurations step-by-step.
       </>
     ),
   },
   {
-    title: 'Powered by React',
+    title: 'The Cauldron',
     Svg: require('@site/static/img/undraw_docusaurus_react.svg').default,
     description: (
       <>
-        Extend or customize your website layout by reusing React. Docusaurus can
-        be extended while reusing the same header and footer.
+        Manage your entire container ecosystem with a modern terminal interface. 
+        Monitor status, manage homes, and clean up storage effortlessly.
       </>
     ),
   },
